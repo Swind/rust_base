@@ -1,6 +1,6 @@
 use crate::sequence_token::SequenceToken;
 
-// RAII：建立時設定 thread-local sequence token，drop 時清除
+// RAII guard: sets the thread-local sequence token on construction, clears it on drop.
 pub struct ScopedSequenceToken;
 
 impl ScopedSequenceToken {

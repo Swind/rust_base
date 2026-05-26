@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::thread_pool::task_source::{TaskSource, TaskSourceSortKey};
 
-// Arc<dyn TaskSource> 不實作 Ord，用 newtype 只比較 sort_key
+// Arc<dyn TaskSource> does not implement Ord; this newtype compares only by sort_key.
 struct QueueEntry {
     sort_key: TaskSourceSortKey,
     task_source: Arc<dyn TaskSource>,
@@ -26,8 +26,8 @@ impl PartialOrd for QueueEntry {
 
 impl Ord for QueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap 是 max-heap：「最大」的先出來
-        // priority 高的優先，同 priority 時 ready_time 早的優先（反轉比較）
+        // BinaryHeap is a max-heap, so the "largest" entry is popped first.
+        // Higher priority wins; for equal priority, earlier ready_time wins (reversed comparison).
         self.sort_key
             .priority
             .cmp(&other.sort_key.priority)

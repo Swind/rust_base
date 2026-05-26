@@ -13,7 +13,7 @@ use crate::thread_pool::task_source::{
     ExecutionEnvironment, RunStatus, TaskSource, TaskSourceSortKey,
 };
 
-// BinaryHeap 需要 Ord，只用 ready_time 和 sequence_num 比較，忽略 callback
+// BinaryHeap requires Ord; only ready_time and sequence_num are compared, the callback is ignored.
 struct DelayedTask {
     ready_time: Instant,
     sequence_num: u64,
@@ -36,7 +36,8 @@ impl PartialOrd for DelayedTask {
 
 impl Ord for DelayedTask {
     fn cmp(&self, other: &Self) -> Ordering {
-        // 自然序：越早到期越小，配合 BinaryHeap<Reverse<>> 成為 min-heap
+        // Natural order: earlier deadline = smaller value.
+        // Combined with BinaryHeap<Reverse<>> this gives a min-heap by ready_time.
         self.ready_time
             .cmp(&other.ready_time)
             .then(self.sequence_num.cmp(&other.sequence_num))
@@ -45,7 +46,7 @@ impl Ord for DelayedTask {
 
 struct SequenceInner {
     immediate_queue: VecDeque<Task>,
-    // Reverse 讓 BinaryHeap 變成 min-heap，peek() 取出最早到期的 task
+    // Reverse turns BinaryHeap into a min-heap so peek() yields the earliest deadline.
     delayed_queue: BinaryHeap<Reverse<DelayedTask>>,
     next_sequence_num: u64,
 }
@@ -55,7 +56,8 @@ pub struct Sequence {
     inner: Mutex<SequenceInner>,
     has_worker: AtomicBool,
     traits: TaskTraits,
-    // Weak 避免與 PooledSequencedTaskRunner 形成循環引用；Option 因為 Weak::<dyn T>::new() 不支援 unsized type
+    // Weak avoids a reference cycle with PooledSequencedTaskRunner.
+    // Option is needed because Weak::<dyn T>::new() requires T: Sized.
     task_runner: Mutex<Option<Weak<dyn SequencedTaskRunner>>>,
 }
 
@@ -100,7 +102,7 @@ impl Sequence {
         }));
     }
 
-    // 在持有 lock 的情況下，把到期的 delayed task 移進 immediate_queue
+    // Must be called while holding the lock: moves all expired delayed tasks into immediate_queue.
     fn flush_ready_delayed_tasks(inner: &mut SequenceInner, now: Instant) {
         while let Some(Reverse(delayed)) = inner.delayed_queue.peek() {
             if delayed.ready_time <= now {
@@ -138,7 +140,8 @@ impl TaskSource for Sequence {
     }
 
     fn will_run_task(&self) -> RunStatus {
-        // swap 回傳舊值：舊值為 true 代表已有 worker，拒絕；舊值為 false 代表成功取得
+        // swap returns the old value: true means a worker already owns this sequence (reject);
+        // false means we successfully claimed it.
         if self.has_worker.swap(true, AtomicOrdering::AcqRel) {
             RunStatus::Disallowed
         } else {
@@ -165,5 +168,111 @@ impl TaskSource for Sequence {
 
     fn will_re_enqueue(&self, now: Instant) -> bool {
         self.has_ready_tasks(now)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::Task;
+    use crate::task_traits::TaskTraits;
+    use crate::thread_pool::task_source::{RunStatus, TaskSource};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    // Simulates the full worker execution cycle:
+    // will_run_task -> take_task -> callback -> did_process_task.
+    // Returns the result of did_process_task (true = more tasks remain).
+    fn run_one_task(seq: &Sequence) -> bool {
+        match seq.will_run_task() {
+            RunStatus::Disallowed => false,
+            _ => {
+                if let Some(task) = seq.take_task() {
+                    (task.callback)();
+                }
+                seq.did_process_task()
+            }
+        }
+    }
+
+    #[test]
+    fn push_and_take_task() {
+        // Verify the basic push -> take -> execute round trip.
+        let seq = Arc::new(Sequence::new(TaskTraits::default()));
+        let executed = Arc::new(Mutex::new(false));
+        let e = Arc::clone(&executed);
+
+        seq.push_task(Task::new(Box::new(move || *e.lock().unwrap() = true)));
+
+        assert!(seq.has_ready_tasks(Instant::now()));
+        run_one_task(&seq);
+        assert!(*executed.lock().unwrap());
+    }
+
+    #[test]
+    fn tasks_execute_in_fifo_order() {
+        // Tasks posted to the same Sequence must execute in the order they were pushed (FIFO).
+        let seq = Arc::new(Sequence::new(TaskTraits::default()));
+        let results = Arc::new(Mutex::new(Vec::new()));
+
+        for i in 0..5usize {
+            let r = Arc::clone(&results);
+            seq.push_task(Task::new(Box::new(move || r.lock().unwrap().push(i))));
+        }
+
+        while seq.has_ready_tasks(Instant::now()) {
+            run_one_task(&seq);
+        }
+
+        assert_eq!(*results.lock().unwrap(), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn has_worker_prevents_second_worker() {
+        // will_run_task must return Disallowed while has_worker is true.
+        // This is the core mechanism that prevents a Sequence from running concurrently.
+        let seq = Arc::new(Sequence::new(TaskTraits::default()));
+        seq.push_task(Task::new(Box::new(|| {})));
+
+        // First call succeeds and sets has_worker = true.
+        match seq.will_run_task() {
+            RunStatus::AllowedNotSaturated => {}
+            _ => panic!("expected AllowedNotSaturated"),
+        }
+
+        // Second call is rejected because a worker already owns the sequence.
+        match seq.will_run_task() {
+            RunStatus::Disallowed => {}
+            _ => panic!("expected Disallowed"),
+        }
+
+        seq.take_task();
+        seq.did_process_task(); // clears has_worker
+    }
+
+    #[test]
+    fn delayed_task_not_ready_before_time() {
+        // A delayed task whose deadline has not yet passed must not appear in has_ready_tasks.
+        let seq = Arc::new(Sequence::new(TaskTraits::default()));
+        let future = Instant::now() + Duration::from_secs(60);
+
+        seq.push_delayed_task(Task::new(Box::new(|| {})), future);
+
+        assert!(!seq.has_ready_tasks(Instant::now()));
+    }
+
+    #[test]
+    fn delayed_task_ready_after_deadline() {
+        // A delayed task whose deadline has already passed must be taken and executed.
+        let seq = Arc::new(Sequence::new(TaskTraits::default()));
+        let past = Instant::now() - Duration::from_millis(1);
+        let executed = Arc::new(Mutex::new(false));
+        let e = Arc::clone(&executed);
+
+        seq.push_delayed_task(Task::new(Box::new(move || *e.lock().unwrap() = true)), past);
+
+        assert!(seq.has_ready_tasks(Instant::now()));
+        run_one_task(&seq);
+        assert!(*executed.lock().unwrap());
     }
 }

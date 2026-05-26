@@ -20,7 +20,7 @@ pub struct TaskSourceSortKey {
 
 pub struct ExecutionEnvironment {
     pub token: SequenceToken,
-    // Phase 3 實作 PooledSequencedTaskRunner 後才會有值
+    // Populated once PooledSequencedTaskRunner is wired up in Phase 3.
     pub task_runner: Option<Arc<dyn SequencedTaskRunner>>,
 }
 
@@ -28,10 +28,10 @@ pub trait TaskSource: Send + Sync {
     fn get_execution_environment(&self) -> ExecutionEnvironment;
     fn get_sort_key(&self) -> TaskSourceSortKey;
     fn has_ready_tasks(&self, now: Instant) -> bool;
-    // 所有方法皆為 &self，內部透過 Mutex / AtomicBool 保護狀態
+    // All methods take &self; internal state is mutated through Mutex / AtomicBool.
     fn will_run_task(&self) -> RunStatus;
     fn take_task(&self) -> Option<Task>;
-    // 回傳 true 代表還有 ready task，呼叫端應重新 enqueue
+    // Returns true if more ready tasks remain; the caller should re-enqueue this source.
     fn did_process_task(&self) -> bool;
     fn will_re_enqueue(&self, now: Instant) -> bool;
 }
