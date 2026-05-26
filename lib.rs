@@ -4,3 +4,10 @@ pub mod task;
 pub mod task_runner;
 pub mod task_traits;
 pub mod thread_pool;
+
+// Convenient re-exports for the most commonly used public types.
+pub use sequence_token::SequenceToken;
+pub use sequenced_task_runner::SequencedTaskRunner;
+pub use task_runner::TaskRunner;
+pub use task_traits::{TaskPriority, TaskShutdownBehavior, TaskTraits, ThreadPolicy};
+pub use thread_pool::thread_pool::ThreadPool;
