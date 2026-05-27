@@ -32,10 +32,7 @@ impl TaskTracker {
     pub fn will_post_task(&self, traits: &TaskTraits) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.shutdown_started {
-            return matches!(
-                traits.shutdown_behavior,
-                TaskShutdownBehavior::ContinueOnShutdown
-            );
+            return matches!(traits.shutdown_behavior, TaskShutdownBehavior::ContinueOnShutdown);
         }
         if traits.shutdown_behavior == TaskShutdownBehavior::BlockShutdown {
             inner.num_tasks_blocking_shutdown += 1;

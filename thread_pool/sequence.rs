@@ -13,7 +13,8 @@ use crate::thread_pool::task_source::{
     ExecutionEnvironment, RunStatus, TaskSource, TaskSourceSortKey,
 };
 
-// BinaryHeap requires Ord; only ready_time and sequence_num are compared, the callback is ignored.
+// BinaryHeap requires Ord; only ready_time and sequence_num are compared, the
+// callback is ignored.
 struct DelayedTask {
     ready_time: Instant,
     sequence_num: u64,
@@ -38,9 +39,7 @@ impl Ord for DelayedTask {
     fn cmp(&self, other: &Self) -> Ordering {
         // Natural order: earlier deadline = smaller value.
         // Combined with BinaryHeap<Reverse<>> this gives a min-heap by ready_time.
-        self.ready_time
-            .cmp(&other.ready_time)
-            .then(self.sequence_num.cmp(&other.sequence_num))
+        self.ready_time.cmp(&other.ready_time).then(self.sequence_num.cmp(&other.sequence_num))
     }
 }
 
@@ -102,7 +101,8 @@ impl Sequence {
         }));
     }
 
-    // Must be called while holding the lock: moves all expired delayed tasks into immediate_queue.
+    // Must be called while holding the lock: moves all expired delayed tasks into
+    // immediate_queue.
     fn flush_ready_delayed_tasks(inner: &mut SequenceInner, now: Instant) {
         while let Some(Reverse(delayed)) = inner.delayed_queue.peek() {
             if delayed.ready_time <= now {
@@ -119,34 +119,23 @@ impl TaskSource for Sequence {
     fn get_execution_environment(&self) -> ExecutionEnvironment {
         ExecutionEnvironment {
             token: self.token,
-            task_runner: self
-                .task_runner
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(|w| w.upgrade()),
+            task_runner: self.task_runner.lock().unwrap().as_ref().and_then(|w| w.upgrade()),
         }
     }
 
     fn get_sort_key(&self) -> TaskSourceSortKey {
-        TaskSourceSortKey {
-            priority: self.traits.priority,
-            ready_time: Instant::now(),
-        }
+        TaskSourceSortKey { priority: self.traits.priority, ready_time: Instant::now() }
     }
 
     fn has_ready_tasks(&self, now: Instant) -> bool {
         let inner = self.inner.lock().unwrap();
         !inner.immediate_queue.is_empty()
-            || inner
-                .delayed_queue
-                .peek()
-                .map_or(false, |Reverse(d)| d.ready_time <= now)
+            || inner.delayed_queue.peek().map_or(false, |Reverse(d)| d.ready_time <= now)
     }
 
     fn will_run_task(&self) -> RunStatus {
-        // swap returns the old value: true means a worker already owns this sequence (reject);
-        // false means we successfully claimed it.
+        // swap returns the old value: true means a worker already owns this sequence
+        // (reject); false means we successfully claimed it.
         if self.has_worker.swap(true, AtomicOrdering::AcqRel) {
             RunStatus::Disallowed
         } else {
@@ -165,10 +154,7 @@ impl TaskSource for Sequence {
         let inner = self.inner.lock().unwrap();
         let now = Instant::now();
         !inner.immediate_queue.is_empty()
-            || inner
-                .delayed_queue
-                .peek()
-                .map_or(false, |Reverse(d)| d.ready_time <= now)
+            || inner.delayed_queue.peek().map_or(false, |Reverse(d)| d.ready_time <= now)
     }
 
     fn will_re_enqueue(&self, now: Instant) -> bool {
@@ -216,7 +202,8 @@ mod tests {
 
     #[test]
     fn tasks_execute_in_fifo_order() {
-        // Tasks posted to the same Sequence must execute in the order they were pushed (FIFO).
+        // Tasks posted to the same Sequence must execute in the order they were pushed
+        // (FIFO).
         let seq = Arc::new(Sequence::new(TaskTraits::default()));
         let results = Arc::new(Mutex::new(Vec::new()));
 
@@ -235,7 +222,8 @@ mod tests {
     #[test]
     fn has_worker_prevents_second_worker() {
         // will_run_task must return Disallowed while has_worker is true.
-        // This is the core mechanism that prevents a Sequence from running concurrently.
+        // This is the core mechanism that prevents a Sequence from running
+        // concurrently.
         let seq = Arc::new(Sequence::new(TaskTraits::default()));
         seq.push_task(Task::new(Box::new(|| {})));
 
@@ -257,7 +245,8 @@ mod tests {
 
     #[test]
     fn delayed_task_not_ready_before_time() {
-        // A delayed task whose deadline has not yet passed must not appear in has_ready_tasks.
+        // A delayed task whose deadline has not yet passed must not appear in
+        // has_ready_tasks.
         let seq = Arc::new(Sequence::new(TaskTraits::default()));
         let future = Instant::now() + Duration::from_secs(60);
 

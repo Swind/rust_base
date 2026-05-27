@@ -31,7 +31,8 @@ pub trait TaskSource: Send + Sync {
     // All methods take &self; internal state is mutated through Mutex / AtomicBool.
     fn will_run_task(&self) -> RunStatus;
     fn take_task(&self) -> Option<Task>;
-    // Returns true if more ready tasks remain; the caller should re-enqueue this source.
+    // Returns true if more ready tasks remain; the caller should re-enqueue this
+    // source.
     fn did_process_task(&self) -> bool;
     fn will_re_enqueue(&self, now: Instant) -> bool;
 }

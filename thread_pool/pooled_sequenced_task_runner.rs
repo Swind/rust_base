@@ -27,7 +27,8 @@ impl PooledSequencedTaskRunner {
             thread_group,
             delayed_task_manager,
         });
-        // Wire back-reference so tasks can re-post to the same sequence via current_default().
+        // Wire back-reference so tasks can re-post to the same sequence via
+        // current_default().
         let weak: Weak<dyn SequencedTaskRunner> =
             Arc::downgrade(&runner) as Weak<dyn SequencedTaskRunner>;
         runner.sequence.set_task_runner(weak);
@@ -48,10 +49,8 @@ impl TaskRunner for PooledSequencedTaskRunner {
         delay: Duration,
     ) -> bool {
         let ready_time = std::time::Instant::now() + delay;
-        self.sequence
-            .push_delayed_task(Task::new(callback), ready_time);
-        self.delayed_task_manager
-            .add_sequence(ready_time, Arc::clone(&self.sequence));
+        self.sequence.push_delayed_task(Task::new(callback), ready_time);
+        self.delayed_task_manager.add_sequence(ready_time, Arc::clone(&self.sequence));
         true
     }
 
@@ -60,7 +59,8 @@ impl TaskRunner for PooledSequencedTaskRunner {
         task: Box<dyn FnOnce() + Send + 'static>,
         reply: Box<dyn FnOnce() + Send + 'static>,
     ) -> bool {
-        // Capture the caller's current-default runner so reply executes on the caller's sequence.
+        // Capture the caller's current-default runner so reply executes on the caller's
+        // sequence.
         let reply_runner = crate::sequenced_task_runner::current_default();
         let wrapped: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
             task();
@@ -74,8 +74,8 @@ impl TaskRunner for PooledSequencedTaskRunner {
 
 impl SequencedTaskRunner for PooledSequencedTaskRunner {
     fn post_non_nestable_task(&self, callback: Box<dyn FnOnce() + Send + 'static>) -> bool {
-        // Non-nestable tasks are treated the same as regular tasks in a thread-pool context
-        // because the thread pool never runs nested run loops.
+        // Non-nestable tasks are treated the same as regular tasks in a thread-pool
+        // context because the thread pool never runs nested run loops.
         self.post_task(callback)
     }
 
@@ -99,11 +99,7 @@ mod tests {
 
     fn make_runner(
         num_threads: usize,
-    ) -> (
-        Arc<ThreadGroup>,
-        Arc<DelayedTaskManager>,
-        Arc<PooledSequencedTaskRunner>,
-    ) {
+    ) -> (Arc<ThreadGroup>, Arc<DelayedTaskManager>, Arc<PooledSequencedTaskRunner>) {
         let group = ThreadGroup::new(num_threads);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
         let runner = PooledSequencedTaskRunner::new(
@@ -197,10 +193,7 @@ mod tests {
         group.join_all();
         dtm.shutdown();
 
-        assert_eq!(
-            *reply_sequence.lock().unwrap(),
-            Some(runner_a.sequence_token())
-        );
+        assert_eq!(*reply_sequence.lock().unwrap(), Some(runner_a.sequence_token()));
     }
 
     #[test]

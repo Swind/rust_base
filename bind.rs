@@ -3,7 +3,8 @@ use std::sync::{Arc, Weak};
 /// Abstracts over `Arc<T>` and `Weak<T>` so `bind_once` can accept either.
 ///
 /// - `Arc<T>`  → always resolves to `Some(arc)`
-/// - `Weak<T>` → resolves to `Some(arc)` if the object is still alive, `None` otherwise
+/// - `Weak<T>` → resolves to `Some(arc)` if the object is still alive, `None`
+///   otherwise
 pub trait IntoArc<T>: Send + 'static {
     fn into_arc(self) -> Option<Arc<T>>;
 }
@@ -64,9 +65,7 @@ mod tests {
 
     impl Counter {
         fn new() -> Arc<Self> {
-            Arc::new(Self {
-                count: Mutex::new(0),
-            })
+            Arc::new(Self { count: Mutex::new(0) })
         }
         fn increment(&self) {
             *self.count.lock().unwrap() += 1;

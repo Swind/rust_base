@@ -217,8 +217,9 @@ mod tests {
 
     #[test]
     fn skip_on_shutdown_task_is_rejected_after_shutdown() {
-        // Verify that will_post_task() rejects SkipOnShutdown tasks once shutdown has started.
-        // (Tasks already in the queue use a best-effort check inside the wrapper closure.)
+        // Verify that will_post_task() rejects SkipOnShutdown tasks once shutdown has
+        // started. (Tasks already in the queue use a best-effort check inside
+        // the wrapper closure.)
         let pool = ThreadPool::new(2);
         pool.task_tracker.shutdown(); // mark shutdown without waiting (no BlockShutdown tasks)
 
@@ -232,10 +233,7 @@ mod tests {
             }),
         );
 
-        assert!(
-            !posted,
-            "SkipOnShutdown task should be rejected after shutdown"
-        );
+        assert!(!posted, "SkipOnShutdown task should be rejected after shutdown");
         assert!(!*ran.lock().unwrap(), "Task should not have run");
 
         pool.thread_group.join_all();
@@ -247,10 +245,8 @@ mod tests {
         let pool = ThreadPool::new(2);
         pool.task_tracker.shutdown();
 
-        let result = pool.post_task(
-            traits_with(TaskShutdownBehavior::SkipOnShutdown),
-            Box::new(|| {}),
-        );
+        let result =
+            pool.post_task(traits_with(TaskShutdownBehavior::SkipOnShutdown), Box::new(|| {}));
         assert!(!result);
 
         pool.thread_group.join_all();

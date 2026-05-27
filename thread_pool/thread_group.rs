@@ -119,7 +119,8 @@ mod tests {
 
     #[test]
     fn tasks_in_same_sequence_execute_in_order() {
-        // Tasks posted to the same Sequence must remain ordered even with 4 workers competing.
+        // Tasks posted to the same Sequence must remain ordered even with 4 workers
+        // competing.
         //
         // The has_worker flag ensures only one worker holds the Sequence at a time,
         // so the FIFO order of the immediate_queue is always respected.
@@ -151,9 +152,10 @@ mod tests {
     fn tasks_in_different_sequences_run_independently() {
         // Tasks in distinct Sequences must be able to run concurrently.
         //
-        // Barrier::new(3) requires both worker tasks and the test thread to arrive together.
-        // If the two tasks were forced to run sequentially, the first task's barrier.wait()
-        // would block forever (deadlock), causing the test to fail.
+        // Barrier::new(3) requires both worker tasks and the test thread to arrive
+        // together. If the two tasks were forced to run sequentially, the first
+        // task's barrier.wait() would block forever (deadlock), causing the
+        // test to fail.
         let barrier = Arc::new(Barrier::new(3));
 
         let group = ThreadGroup::new(4); // needs at least 2 workers to run in parallel
@@ -181,8 +183,9 @@ fn worker_loop(group: Arc<ThreadGroup>) {
         let _default_handle = env.task_runner.map(CurrentDefaultHandle::new);
 
         // Only clear has_worker and re-enqueue when we actually claimed the sequence.
-        // If Disallowed, another worker already owns it; calling did_process_task() here
-        // would clear that worker's has_worker flag and allow concurrent execution.
+        // If Disallowed, another worker already owns it; calling did_process_task()
+        // here would clear that worker's has_worker flag and allow concurrent
+        // execution.
         let claimed = match source.will_run_task() {
             RunStatus::Disallowed => false,
             _ => {

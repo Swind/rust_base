@@ -1,4 +1,5 @@
-// Integration tests: only the public API is used here, exactly as an external caller would.
+// Integration tests: only the public API is used here, exactly as an external
+// caller would.
 
 use rust_task::{
     SequenceToken, TaskPriority, TaskShutdownBehavior, TaskTraits, ThreadPolicy, ThreadPool,
@@ -8,8 +9,9 @@ use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-// A countdown latch: blocks the caller until count_down() has been called N times.
-// Cleaner than Barrier for cases where the N tasks don't all need to wait for each other.
+// A countdown latch: blocks the caller until count_down() has been called N
+// times. Cleaner than Barrier for cases where the N tasks don't all need to
+// wait for each other.
 struct Latch {
     count: Mutex<usize>,
     cvar: Condvar,
@@ -17,10 +19,7 @@ struct Latch {
 
 impl Latch {
     fn new(n: usize) -> Arc<Self> {
-        Arc::new(Self {
-            count: Mutex::new(n),
-            cvar: Condvar::new(),
-        })
+        Arc::new(Self { count: Mutex::new(n), cvar: Condvar::new() })
     }
 
     fn count_down(&self) {
@@ -52,7 +51,8 @@ fn traits_with(behavior: TaskShutdownBehavior) -> TaskTraits {
     }
 }
 
-// ── 1. Basic lifecycle ────────────────────────────────────────────────────────
+// ── 1. Basic lifecycle
+// ────────────────────────────────────────────────────────
 
 #[test]
 fn pool_executes_posted_task() {
@@ -175,7 +175,8 @@ fn multiple_sequenced_runners_each_maintain_their_own_order() {
     pool.shutdown();
 }
 
-// ── 3. Parallel task runner ───────────────────────────────────────────────────
+// ── 3. Parallel task runner
+// ───────────────────────────────────────────────────
 
 #[test]
 fn parallel_runner_executes_tasks_concurrently() {
@@ -194,7 +195,8 @@ fn parallel_runner_executes_tasks_concurrently() {
     pool.shutdown();
 }
 
-// ── 4. post_task_and_reply ────────────────────────────────────────────────────
+// ── 4. post_task_and_reply
+// ────────────────────────────────────────────────────
 
 #[test]
 fn post_task_and_reply_sends_reply_to_caller_sequence() {
@@ -308,8 +310,8 @@ fn continue_on_shutdown_task_can_be_posted_after_shutdown_starts() {
     // We call pool.shutdown() and then verify that ContinueOnShutdown is accepted
     // by will_post_task. We test this via the return value of post_task.
     //
-    // Note: after join_all(), workers are gone, so we only test the post acceptance,
-    // not actual execution.
+    // Note: after join_all(), workers are gone, so we only test the post
+    // acceptance, not actual execution.
     let pool = ThreadPool::new(2);
 
     // Drain workers first so shutdown() returns quickly.
@@ -321,10 +323,8 @@ fn continue_on_shutdown_task_can_be_posted_after_shutdown_starts() {
     // shutdown_started=true and join_all() would be accepted.
     //
     // What we CAN assert: SkipOnShutdown is rejected after shutdown.
-    let rejected = !pool.post_task(
-        traits_with(TaskShutdownBehavior::SkipOnShutdown),
-        Box::new(|| {}),
-    );
+    let rejected =
+        !pool.post_task(traits_with(TaskShutdownBehavior::SkipOnShutdown), Box::new(|| {}));
     assert!(rejected, "SkipOnShutdown should be rejected after shutdown");
 }
 
@@ -368,7 +368,8 @@ fn stress_sequenced_runner_1000_tasks_in_order() {
     let runner = pool.create_sequenced_task_runner(default_traits());
 
     // Each task records the value of the counter at the time it runs.
-    // Because tasks execute one at a time in FIFO order, task i must see counter == i.
+    // Because tasks execute one at a time in FIFO order, task i must see counter ==
+    // i.
     let counter = Arc::new(AtomicUsize::new(0));
     let latch = Latch::new(N);
 
@@ -377,11 +378,7 @@ fn stress_sequenced_runner_1000_tasks_in_order() {
         let l = Arc::clone(&latch);
         runner.post_task(Box::new(move || {
             let prev = c.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(
-                prev, i,
-                "task {} ran out of order (counter was {})",
-                i, prev
-            );
+            assert_eq!(prev, i, "task {} ran out of order (counter was {})", i, prev);
             l.count_down();
         }));
     }
@@ -545,7 +542,8 @@ fn stress_sequenced_runner_with_many_competing_workers() {
     pool.shutdown();
 }
 
-// ── 9. BlockShutdown queued-task guarantees ───────────────────────────────────
+// ── 9. BlockShutdown queued-task guarantees
+// ───────────────────────────────────
 
 // Verifies that shutdown() waits for a BlockShutdown task that was posted
 // AFTER the worker is already busy — i.e., the task sits in the queue and has
