@@ -95,8 +95,8 @@ mod tests {
         let counter = Counter::new();
         let task = bind_once(Arc::downgrade(&counter), |c| c.increment());
         drop(counter); // object freed here
-        task();        // should be a no-op
-        // counter is gone; just verify task() didn't panic
+        task(); // should be a no-op
+                // counter is gone; just verify task() didn't panic
     }
 
     #[test]

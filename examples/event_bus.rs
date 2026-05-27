@@ -73,8 +73,12 @@ impl<E: Send + 'static> EventBus<E> {
 
     fn publish(self: &Arc<Self>, event: E) {
         self.runner.post_task(bind_once(Arc::downgrade(self), move |bus| {
-            let cbs: Vec<Callback<E>> = bus.state.lock().unwrap()
-                .subscribers.iter()
+            let cbs: Vec<Callback<E>> = bus
+                .state
+                .lock()
+                .unwrap()
+                .subscribers
+                .iter()
                 .map(|(_, cb)| Arc::clone(cb))
                 .collect();
             for cb in cbs {
@@ -95,7 +99,9 @@ impl<E: Send + 'static> EventBus<E> {
 fn wait_flush(bus: &EventBus<AppEvent>) {
     let b = Arc::new(Barrier::new(2));
     let bc = Arc::clone(&b);
-    bus.flush(move || { bc.wait(); });
+    bus.flush(move || {
+        bc.wait();
+    });
     b.wait();
 }
 
@@ -116,9 +122,9 @@ fn main() {
     let l = Arc::clone(&log);
     bus.subscribe(move |e| {
         let s = match e {
-            AppEvent::UserLoggedIn(u)            => format!("[logger] login:   {u}"),
+            AppEvent::UserLoggedIn(u) => format!("[logger] login:   {u}"),
             AppEvent::MessageSent { from, text } => format!("[logger] message: {from} → {text}"),
-            AppEvent::UserLoggedOut(u)           => format!("[logger] logout:  {u}"),
+            AppEvent::UserLoggedOut(u) => format!("[logger] logout:  {u}"),
         };
         l.lock().unwrap().push(s);
     });

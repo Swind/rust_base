@@ -60,10 +60,13 @@ fn pool_executes_posted_task() {
     let barrier = Arc::new(Barrier::new(2));
     let b = Arc::clone(&barrier);
 
-    pool.post_task(default_traits(), Box::new(move || {
-        *e.lock().unwrap() = true;
-        b.wait();
-    }));
+    pool.post_task(
+        default_traits(),
+        Box::new(move || {
+            *e.lock().unwrap() = true;
+            b.wait();
+        }),
+    );
 
     barrier.wait();
     pool.shutdown();
@@ -110,7 +113,9 @@ fn sequenced_runner_executes_tasks_in_fifo_order() {
         let r = Arc::clone(&results);
         runner.post_task(Box::new(move || r.lock().unwrap().push(i)));
     }
-    runner.post_task(Box::new(move || { b.wait(); }));
+    runner.post_task(Box::new(move || {
+        b.wait();
+    }));
 
     barrier.wait();
     pool.shutdown();
@@ -128,7 +133,9 @@ fn two_sequenced_runners_are_independent_and_run_in_parallel() {
     for _ in 0..2 {
         let runner = pool.create_sequenced_task_runner(default_traits());
         let b = Arc::clone(&barrier);
-        runner.post_task(Box::new(move || { b.wait(); }));
+        runner.post_task(Box::new(move || {
+            b.wait();
+        }));
     }
 
     barrier.wait();
@@ -175,7 +182,9 @@ fn parallel_runner_executes_tasks_concurrently() {
 
     for _ in 0..2 {
         let b = Arc::clone(&barrier);
-        runner.post_task(Box::new(move || { b.wait(); }));
+        runner.post_task(Box::new(move || {
+            b.wait();
+        }));
     }
 
     barrier.wait();
@@ -276,10 +285,13 @@ fn block_shutdown_task_completes_before_shutdown_returns() {
     let barrier = Arc::new(Barrier::new(2));
     let b = Arc::clone(&barrier);
 
-    pool.post_task(traits_with(TaskShutdownBehavior::BlockShutdown), Box::new(move || {
-        b.wait(); // signal test thread that task is running
-        *c.lock().unwrap() = true;
-    }));
+    pool.post_task(
+        traits_with(TaskShutdownBehavior::BlockShutdown),
+        Box::new(move || {
+            b.wait(); // signal test thread that task is running
+            *c.lock().unwrap() = true;
+        }),
+    );
 
     barrier.wait(); // wait until task is running
     pool.shutdown(); // must block until the BlockShutdown task finishes
@@ -306,10 +318,8 @@ fn continue_on_shutdown_task_can_be_posted_after_shutdown_starts() {
     // shutdown_started=true and join_all() would be accepted.
     //
     // What we CAN assert: SkipOnShutdown is rejected after shutdown.
-    let rejected = !pool.post_task(
-        traits_with(TaskShutdownBehavior::SkipOnShutdown),
-        Box::new(|| {}),
-    );
+    let rejected =
+        !pool.post_task(traits_with(TaskShutdownBehavior::SkipOnShutdown), Box::new(|| {}));
     assert!(rejected, "SkipOnShutdown should be rejected after shutdown");
 }
 
@@ -548,17 +558,23 @@ fn shutdown_waits_for_queued_block_shutdown_task() {
     let e = Arc::clone(&block_shutdown_executed);
 
     // First task: occupies the single worker.
-    pool.post_task(default_traits(), Box::new(move || {
-        sb.wait();  // signal: worker is now busy
-        rb.wait();  // wait until test thread releases us
-    }));
+    pool.post_task(
+        default_traits(),
+        Box::new(move || {
+            sb.wait(); // signal: worker is now busy
+            rb.wait(); // wait until test thread releases us
+        }),
+    );
 
     start_barrier.wait(); // wait until worker is busy
 
     // Post BlockShutdown task — it lands in the queue (worker is still busy).
-    pool.post_task(traits_with(TaskShutdownBehavior::BlockShutdown), Box::new(move || {
-        *e.lock().unwrap() = true;
-    }));
+    pool.post_task(
+        traits_with(TaskShutdownBehavior::BlockShutdown),
+        Box::new(move || {
+            *e.lock().unwrap() = true;
+        }),
+    );
 
     // Call shutdown() in a background thread so we can also release the first task.
     let pool_clone = Arc::clone(&pool);
@@ -568,8 +584,10 @@ fn shutdown_waits_for_queued_block_shutdown_task() {
     release_barrier.wait();
 
     shutdown_handle.join().unwrap();
-    assert!(*block_shutdown_executed.lock().unwrap(),
-        "shutdown() returned before the queued BlockShutdown task executed");
+    assert!(
+        *block_shutdown_executed.lock().unwrap(),
+        "shutdown() returned before the queued BlockShutdown task executed"
+    );
 }
 
 // Posts many BlockShutdown tasks and verifies all of them complete before
@@ -585,10 +603,13 @@ fn shutdown_waits_for_all_queued_block_shutdown_tasks() {
     for _ in 0..BLOCK_TASKS {
         let e = Arc::clone(&executed);
         let l = Arc::clone(&latch);
-        pool.post_task(traits_with(TaskShutdownBehavior::BlockShutdown), Box::new(move || {
-            e.fetch_add(1, Ordering::Relaxed);
-            l.count_down();
-        }));
+        pool.post_task(
+            traits_with(TaskShutdownBehavior::BlockShutdown),
+            Box::new(move || {
+                e.fetch_add(1, Ordering::Relaxed);
+                l.count_down();
+            }),
+        );
     }
 
     pool.shutdown();

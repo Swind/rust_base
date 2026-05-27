@@ -1,5 +1,7 @@
 # rust_task
 
+[![CI](https://github.com/Swind/rust-task-runner/actions/workflows/ci.yml/badge.svg)](https://github.com/Swind/rust-task-runner/actions/workflows/ci.yml)
+
 An experimental Rust implementation of Chromium's threading and task system, based on the design described in [Threading and Tasks in Chrome](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md).
 
 This is not a replacement for Chromium's `base::task` — it is a standalone Rust library that ports the core concepts for use in new Rust components.
