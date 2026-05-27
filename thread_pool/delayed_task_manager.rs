@@ -38,9 +38,7 @@ impl Ord for DelayedEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Natural order: earlier deadline = smaller.  Combined with BinaryHeap<Reverse<>>
         // this gives a min-heap sorted by ready_time.
-        self.ready_time
-            .cmp(&other.ready_time)
-            .then(self.id.cmp(&other.id))
+        self.ready_time.cmp(&other.ready_time).then(self.id.cmp(&other.id))
     }
 }
 

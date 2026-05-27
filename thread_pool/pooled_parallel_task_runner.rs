@@ -70,10 +70,16 @@ mod tests {
     use crate::thread_pool::thread_group::ThreadGroup;
     use std::sync::{Arc, Barrier, Mutex};
 
-    fn make_runner(num_threads: usize) -> (Arc<ThreadGroup>, Arc<DelayedTaskManager>, PooledParallelTaskRunner) {
+    fn make_runner(
+        num_threads: usize,
+    ) -> (Arc<ThreadGroup>, Arc<DelayedTaskManager>, PooledParallelTaskRunner) {
         let group = ThreadGroup::new(num_threads);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
-        let runner = PooledParallelTaskRunner::new(TaskTraits::default(), Arc::clone(&group), Arc::clone(&dtm));
+        let runner = PooledParallelTaskRunner::new(
+            TaskTraits::default(),
+            Arc::clone(&group),
+            Arc::clone(&dtm),
+        );
         (group, dtm, runner)
     }
 
@@ -84,7 +90,9 @@ mod tests {
 
         for _ in 0..2 {
             let b = Arc::clone(&barrier);
-            runner.post_task(Box::new(move || { b.wait(); }));
+            runner.post_task(Box::new(move || {
+                b.wait();
+            }));
         }
 
         barrier.wait();

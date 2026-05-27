@@ -1,8 +1,8 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use crate::sequenced_task_runner::SequencedTaskRunner;
 use crate::sequence_token::SequenceToken;
+use crate::sequenced_task_runner::SequencedTaskRunner;
 use crate::task::Task;
 use crate::task_runner::TaskRunner;
 use crate::task_traits::TaskTraits;
@@ -28,7 +28,8 @@ impl PooledSequencedTaskRunner {
             delayed_task_manager,
         });
         // Wire back-reference so tasks can re-post to the same sequence via current_default().
-        let weak: Weak<dyn SequencedTaskRunner> = Arc::downgrade(&runner) as Weak<dyn SequencedTaskRunner>;
+        let weak: Weak<dyn SequencedTaskRunner> =
+            Arc::downgrade(&runner) as Weak<dyn SequencedTaskRunner>;
         runner.sequence.set_task_runner(weak);
         runner
     }
@@ -119,7 +120,9 @@ mod tests {
             let r = Arc::clone(&results);
             runner.post_task(Box::new(move || r.lock().unwrap().push(i)));
         }
-        runner.post_task(Box::new(move || { b.wait(); }));
+        runner.post_task(Box::new(move || {
+            b.wait();
+        }));
 
         barrier.wait();
         group.join_all();
@@ -156,9 +159,15 @@ mod tests {
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
 
         let runner_a = PooledSequencedTaskRunner::new(
-            TaskTraits::default(), Arc::clone(&group), Arc::clone(&dtm));
+            TaskTraits::default(),
+            Arc::clone(&group),
+            Arc::clone(&dtm),
+        );
         let runner_b = PooledSequencedTaskRunner::new(
-            TaskTraits::default(), Arc::clone(&group), Arc::clone(&dtm));
+            TaskTraits::default(),
+            Arc::clone(&group),
+            Arc::clone(&dtm),
+        );
 
         let reply_sequence = Arc::new(Mutex::new(None::<SequenceToken>));
         let rs = Arc::clone(&reply_sequence);

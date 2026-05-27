@@ -41,9 +41,7 @@ pub struct PriorityQueue {
 
 impl PriorityQueue {
     pub fn new() -> Self {
-        Self {
-            heap: BinaryHeap::new(),
-        }
+        Self { heap: BinaryHeap::new() }
     }
 
     pub fn push(&mut self, task_source: Arc<dyn TaskSource>) {

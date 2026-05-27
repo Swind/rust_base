@@ -63,10 +63,7 @@ impl ThreadPool {
 
     // Creates a sequenced task runner backed by this pool.
     // All tasks posted to the returned runner execute in FIFO order.
-    pub fn create_sequenced_task_runner(
-        &self,
-        traits: TaskTraits,
-    ) -> Arc<dyn SequencedTaskRunner> {
+    pub fn create_sequenced_task_runner(&self, traits: TaskTraits) -> Arc<dyn SequencedTaskRunner> {
         PooledSequencedTaskRunner::new(
             traits,
             Arc::clone(&self.thread_group),
@@ -144,10 +141,13 @@ mod tests {
         let barrier = Arc::new(Barrier::new(2));
         let b = Arc::clone(&barrier);
 
-        pool.post_task(default_traits(), Box::new(move || {
-            *e.lock().unwrap() = true;
-            b.wait();
-        }));
+        pool.post_task(
+            default_traits(),
+            Box::new(move || {
+                *e.lock().unwrap() = true;
+                b.wait();
+            }),
+        );
 
         barrier.wait();
         pool.shutdown();
@@ -167,7 +167,9 @@ mod tests {
             let r = Arc::clone(&results);
             runner.post_task(Box::new(move || r.lock().unwrap().push(i)));
         }
-        runner.post_task(Box::new(move || { b.wait(); }));
+        runner.post_task(Box::new(move || {
+            b.wait();
+        }));
 
         barrier.wait();
         pool.shutdown();
@@ -182,7 +184,9 @@ mod tests {
 
         for _ in 0..2 {
             let b = Arc::clone(&barrier);
-            runner.post_task(Box::new(move || { b.wait(); }));
+            runner.post_task(Box::new(move || {
+                b.wait();
+            }));
         }
 
         barrier.wait();
@@ -223,7 +227,9 @@ mod tests {
 
         let posted = pool.post_task(
             traits_with(TaskShutdownBehavior::SkipOnShutdown),
-            Box::new(move || { *ran_clone.lock().unwrap() = true; }),
+            Box::new(move || {
+                *ran_clone.lock().unwrap() = true;
+            }),
         );
 
         assert!(!posted, "SkipOnShutdown task should be rejected after shutdown");
@@ -238,10 +244,8 @@ mod tests {
         let pool = ThreadPool::new(2);
         pool.task_tracker.shutdown();
 
-        let result = pool.post_task(
-            traits_with(TaskShutdownBehavior::SkipOnShutdown),
-            Box::new(|| {}),
-        );
+        let result =
+            pool.post_task(traits_with(TaskShutdownBehavior::SkipOnShutdown), Box::new(|| {}));
         assert!(!result);
 
         pool.thread_group.join_all();
