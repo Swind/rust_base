@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    static CURRENT_SEQUENCE_TOKEN: Cell<Option<SequenceToken>> = Cell::new(None);
+    static CURRENT_SEQUENCE_TOKEN: Cell<Option<SequenceToken>> = const { Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

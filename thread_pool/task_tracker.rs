@@ -15,6 +15,12 @@ pub struct TaskTracker {
     shutdown_done: Condvar,
 }
 
+impl Default for TaskTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskTracker {
     pub fn new() -> Self {
         Self {

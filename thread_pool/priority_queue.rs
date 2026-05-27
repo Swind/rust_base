@@ -41,6 +41,12 @@ pub struct PriorityQueue {
     heap: BinaryHeap<QueueEntry>,
 }
 
+impl Default for PriorityQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PriorityQueue {
     pub fn new() -> Self {
         Self { heap: BinaryHeap::new() }

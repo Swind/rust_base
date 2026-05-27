@@ -130,7 +130,7 @@ impl TaskSource for Sequence {
     fn has_ready_tasks(&self, now: Instant) -> bool {
         let inner = self.inner.lock().unwrap();
         !inner.immediate_queue.is_empty()
-            || inner.delayed_queue.peek().map_or(false, |Reverse(d)| d.ready_time <= now)
+            || inner.delayed_queue.peek().is_some_and(|Reverse(d)| d.ready_time <= now)
     }
 
     fn will_run_task(&self) -> RunStatus {
@@ -154,7 +154,7 @@ impl TaskSource for Sequence {
         let inner = self.inner.lock().unwrap();
         let now = Instant::now();
         !inner.immediate_queue.is_empty()
-            || inner.delayed_queue.peek().map_or(false, |Reverse(d)| d.ready_time <= now)
+            || inner.delayed_queue.peek().is_some_and(|Reverse(d)| d.ready_time <= now)
     }
 
     fn will_re_enqueue(&self, now: Instant) -> bool {
