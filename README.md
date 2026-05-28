@@ -236,6 +236,7 @@ let traits = TaskTraits {
 | `socket_posix` | Async TCP client: connect + read/write, `ReadIfReady`, streaming with callback chaining |
 | `repeating_timer` | Repeating timer built on `post_delayed_task` |
 | `task_monitor` | Queue/execution metrics via `on_metrics`; hang detection via `on_hang` |
+| `file_proxy` | Async file I/O via `FileProxy`: write→read chaining, sequential appends, concurrent reads |
 
 ```bash
 cargo run --example event_bus
@@ -243,4 +244,5 @@ cargo run --example io_task_runner
 cargo run --example socket_posix
 cargo run --example repeating_timer
 cargo run --example task_monitor
+cargo run --example file_proxy
 ```
