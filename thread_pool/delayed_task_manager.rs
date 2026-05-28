@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn delayed_task_fires_after_deadline() {
-        let group = ThreadGroup::new(2);
+        let group = ThreadGroup::new(2, None);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
 
         let executed = Arc::new(Mutex::new(false));
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn earlier_deadline_fires_first() {
-        let group = ThreadGroup::new(2);
+        let group = ThreadGroup::new(2, None);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
 
         let order = Arc::new(Mutex::new(Vec::new()));

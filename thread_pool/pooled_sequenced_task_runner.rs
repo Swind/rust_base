@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::sequence_token::SequenceToken;
 use crate::sequenced_task_runner::SequencedTaskRunner;
 use crate::task::Task;
+use crate::task_monitor::TaskMonitor;
 use crate::task_runner::TaskRunner;
 use crate::task_traits::TaskTraits;
 use crate::thread_pool::delayed_task_manager::DelayedTaskManager;
@@ -14,6 +15,7 @@ pub struct PooledSequencedTaskRunner {
     sequence: Arc<Sequence>,
     thread_group: Arc<ThreadGroup>,
     delayed_task_manager: Arc<DelayedTaskManager>,
+    monitor: Option<Arc<TaskMonitor>>,
 }
 
 impl PooledSequencedTaskRunner {
@@ -21,11 +23,13 @@ impl PooledSequencedTaskRunner {
         traits: TaskTraits,
         thread_group: Arc<ThreadGroup>,
         delayed_task_manager: Arc<DelayedTaskManager>,
+        monitor: Option<Arc<TaskMonitor>>,
     ) -> Arc<Self> {
         let runner = Arc::new(Self {
             sequence: Arc::new(Sequence::new(traits)),
             thread_group,
             delayed_task_manager,
+            monitor,
         });
         // Wire back-reference so tasks can re-post to the same sequence via
         // current_default().
@@ -38,6 +42,10 @@ impl PooledSequencedTaskRunner {
 
 impl TaskRunner for PooledSequencedTaskRunner {
     fn post_task(&self, callback: Box<dyn FnOnce() + Send + 'static>) -> bool {
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         self.sequence.push_task(Task::new(callback));
         self.thread_group.push_task_source(self.sequence.clone());
         true
@@ -48,6 +56,10 @@ impl TaskRunner for PooledSequencedTaskRunner {
         callback: Box<dyn FnOnce() + Send + 'static>,
         delay: Duration,
     ) -> bool {
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         let ready_time = std::time::Instant::now() + delay;
         self.sequence.push_delayed_task(Task::new(callback), ready_time);
         self.delayed_task_manager.add_sequence(ready_time, Arc::clone(&self.sequence));
@@ -100,12 +112,13 @@ mod tests {
     fn make_runner(
         num_threads: usize,
     ) -> (Arc<ThreadGroup>, Arc<DelayedTaskManager>, Arc<PooledSequencedTaskRunner>) {
-        let group = ThreadGroup::new(num_threads);
+        let group = ThreadGroup::new(num_threads, None);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
         let runner = PooledSequencedTaskRunner::new(
             TaskTraits::default(),
             Arc::clone(&group),
             Arc::clone(&dtm),
+            None,
         );
         (group, dtm, runner)
     }
@@ -157,18 +170,20 @@ mod tests {
 
     #[test]
     fn post_task_and_reply_executes_reply_on_caller_sequence() {
-        let group = ThreadGroup::new(4);
+        let group = ThreadGroup::new(4, None);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
 
         let runner_a = PooledSequencedTaskRunner::new(
             TaskTraits::default(),
             Arc::clone(&group),
             Arc::clone(&dtm),
+            None,
         );
         let runner_b = PooledSequencedTaskRunner::new(
             TaskTraits::default(),
             Arc::clone(&group),
             Arc::clone(&dtm),
+            None,
         );
 
         let reply_sequence = Arc::new(Mutex::new(None::<SequenceToken>));

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::task::Task;
+use crate::task_monitor::TaskMonitor;
 use crate::task_runner::TaskRunner;
 use crate::task_traits::TaskTraits;
 use crate::thread_pool::delayed_task_manager::DelayedTaskManager;
@@ -14,6 +15,7 @@ pub struct PooledParallelTaskRunner {
     traits: TaskTraits,
     thread_group: Arc<ThreadGroup>,
     delayed_task_manager: Arc<DelayedTaskManager>,
+    monitor: Option<Arc<TaskMonitor>>,
 }
 
 impl PooledParallelTaskRunner {
@@ -21,13 +23,18 @@ impl PooledParallelTaskRunner {
         traits: TaskTraits,
         thread_group: Arc<ThreadGroup>,
         delayed_task_manager: Arc<DelayedTaskManager>,
+        monitor: Option<Arc<TaskMonitor>>,
     ) -> Self {
-        Self { traits, thread_group, delayed_task_manager }
+        Self { traits, thread_group, delayed_task_manager, monitor }
     }
 }
 
 impl TaskRunner for PooledParallelTaskRunner {
     fn post_task(&self, callback: Box<dyn FnOnce() + Send + 'static>) -> bool {
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         let seq = Arc::new(Sequence::new(self.traits));
         seq.push_task(Task::new(callback));
         self.thread_group.push_task_source(seq);
@@ -39,6 +46,10 @@ impl TaskRunner for PooledParallelTaskRunner {
         callback: Box<dyn FnOnce() + Send + 'static>,
         delay: Duration,
     ) -> bool {
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         let ready_time = std::time::Instant::now() + delay;
         let seq = Arc::new(Sequence::new(self.traits));
         seq.push_delayed_task(Task::new(callback), ready_time);
@@ -73,12 +84,13 @@ mod tests {
     fn make_runner(
         num_threads: usize,
     ) -> (Arc<ThreadGroup>, Arc<DelayedTaskManager>, PooledParallelTaskRunner) {
-        let group = ThreadGroup::new(num_threads);
+        let group = ThreadGroup::new(num_threads, None);
         let dtm = DelayedTaskManager::new(Arc::clone(&group));
         let runner = PooledParallelTaskRunner::new(
             TaskTraits::default(),
             Arc::clone(&group),
             Arc::clone(&dtm),
+            None,
         );
         (group, dtm, runner)
     }

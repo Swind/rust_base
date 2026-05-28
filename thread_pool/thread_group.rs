@@ -3,6 +3,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::sequenced_task_runner::CurrentDefaultHandle;
+use crate::task_monitor::TaskMonitor;
 use crate::thread_pool::priority_queue::PriorityQueue;
 use crate::thread_pool::task_source::{RegisteredTaskSource, RunStatus, TaskSource};
 use crate::thread_pool::worker_thread::ScopedSequenceToken;
@@ -19,7 +20,7 @@ pub struct ThreadGroup {
 }
 
 impl ThreadGroup {
-    pub fn new(num_threads: usize) -> Arc<Self> {
+    pub fn new(num_threads: usize, monitor: Option<Arc<TaskMonitor>>) -> Arc<Self> {
         let group = Arc::new(Self {
             inner: Mutex::new(ThreadGroupInner {
                 priority_queue: PriorityQueue::new(),
@@ -33,7 +34,8 @@ impl ThreadGroup {
             let mut inner = group.inner.lock().unwrap();
             for _ in 0..num_threads {
                 let group_clone = Arc::clone(&group);
-                let handle = thread::spawn(move || worker_loop(group_clone));
+                let monitor_clone = monitor.as_ref().map(Arc::clone);
+                let handle = thread::spawn(move || worker_loop(group_clone, monitor_clone));
                 inner.handles.push(handle);
             }
         }
@@ -102,7 +104,7 @@ mod tests {
         let barrier = Arc::new(Barrier::new(2));
         let b = Arc::clone(&barrier);
 
-        let group = ThreadGroup::new(2);
+        let group = ThreadGroup::new(2, None);
         let seq = Arc::new(Sequence::new(TaskTraits::default()));
 
         seq.push_task(Task::new(Box::new(move || {
@@ -128,7 +130,7 @@ mod tests {
         let barrier = Arc::new(Barrier::new(2));
         let b = Arc::clone(&barrier);
 
-        let group = ThreadGroup::new(4);
+        let group = ThreadGroup::new(4, None);
         let seq = Arc::new(Sequence::new(TaskTraits::default()));
 
         for i in 0..5usize {
@@ -158,7 +160,7 @@ mod tests {
         // test to fail.
         let barrier = Arc::new(Barrier::new(3));
 
-        let group = ThreadGroup::new(4); // needs at least 2 workers to run in parallel
+        let group = ThreadGroup::new(4, None); // needs at least 2 workers to run in parallel
 
         for _ in 0..2 {
             let b = Arc::clone(&barrier);
@@ -174,7 +176,9 @@ mod tests {
     }
 }
 
-fn worker_loop(group: Arc<ThreadGroup>) {
+fn worker_loop(group: Arc<ThreadGroup>, monitor: Option<Arc<TaskMonitor>>) {
+    let slot = monitor.as_ref().map(|m| m.register_worker());
+
     while let Some(registered) = group.get_work() {
         let source = registered.into_source();
         let env = source.get_execution_environment();
@@ -190,7 +194,9 @@ fn worker_loop(group: Arc<ThreadGroup>) {
             RunStatus::Disallowed => false,
             _ => {
                 if let Some(task) = source.take_task() {
+                    if let Some(ref s) = slot { s.task_started(); }
                     (task.callback)();
+                    if let Some(ref s) = slot { s.task_finished(); }
                 }
                 true
             }

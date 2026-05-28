@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::sequence_token::SequenceToken;
 use crate::sequenced_task_runner::{CurrentDefaultHandle, SequencedTaskRunner};
+use crate::task_monitor::TaskMonitor;
 use crate::task_runner::TaskRunner;
 use crate::thread_pool::worker_thread::ScopedSequenceToken;
 
@@ -168,11 +169,26 @@ pub struct IoTaskRunner {
     shutdown: AtomicBool,
     token: SequenceToken,
     thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    monitor: Option<Arc<TaskMonitor>>,
 }
 
 impl IoTaskRunner {
     /// Create a new `IoTaskRunner` and immediately start its IO thread.
     pub fn new() -> Arc<Self> {
+        Self::new_impl(None)
+    }
+
+    /// Create a new `IoTaskRunner` with task monitoring enabled.
+    ///
+    /// Regular tasks posted via `post_task` / `post_delayed_task` are timed
+    /// (queue + execution).  The IO thread is registered with the monitor for
+    /// hang detection; IO callbacks (`on_file_can_*`) are also bracketed by
+    /// `WorkerSlot::task_started/finished`.
+    pub fn new_with_monitor(monitor: Arc<TaskMonitor>) -> Arc<Self> {
+        Self::new_impl(Some(monitor))
+    }
+
+    fn new_impl(monitor: Option<Arc<TaskMonitor>>) -> Arc<Self> {
         let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
         assert!(epoll_fd >= 0, "epoll_create1 failed");
 
@@ -193,6 +209,7 @@ impl IoTaskRunner {
             shutdown: AtomicBool::new(false),
             token: SequenceToken::create(),
             thread_handle: Mutex::new(None),
+            monitor,
         });
 
         let cloned = Arc::clone(&runner);
@@ -305,6 +322,10 @@ impl TaskRunner for IoTaskRunner {
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         self.tasks.lock().unwrap().push_back(callback);
         self.wake();
         true
@@ -318,6 +339,10 @@ impl TaskRunner for IoTaskRunner {
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         let deadline = Instant::now() + delay;
         self.delayed_tasks.lock().unwrap().push(DelayedTask { deadline, callback });
         self.wake();
@@ -373,12 +398,16 @@ fn run_loop(runner: Arc<IoTaskRunner>) {
         CurrentDefaultHandle::new(Arc::clone(&runner) as Arc<dyn SequencedTaskRunner>);
     CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = Some(Arc::downgrade(&runner)));
 
+    let slot = runner.monitor.as_ref().map(|m| m.register_worker());
+
     loop {
         // Drain immediate tasks.
         loop {
             let task = runner.tasks.lock().unwrap().pop_front();
             let Some(task) = task else { break };
+            if let Some(ref s) = slot { s.task_started(); }
             task();
+            if let Some(ref s) = slot { s.task_finished(); }
         }
 
         // Run delayed tasks whose deadline has passed.
@@ -389,7 +418,9 @@ fn run_loop(runner: Arc<IoTaskRunner>) {
                 if q.peek().is_some_and(|t| t.deadline <= now) { q.pop() } else { None }
             };
             let Some(t) = task else { break };
+            if let Some(ref s) = slot { s.task_started(); }
             (t.callback)();
+            if let Some(ref s) = slot { s.task_finished(); }
         }
 
         if runner.shutdown.load(Ordering::Acquire) {
@@ -458,10 +489,14 @@ fn run_loop(runner: Arc<IoTaskRunner>) {
 
             if let Some(w) = watcher_opt {
                 if can_read {
+                    if let Some(ref s) = slot { s.task_started(); }
                     w.on_file_can_read_without_blocking(fd);
+                    if let Some(ref s) = slot { s.task_finished(); }
                 }
                 if can_write {
+                    if let Some(ref s) = slot { s.task_started(); }
                     w.on_file_can_write_without_blocking(fd);
+                    if let Some(ref s) = slot { s.task_finished(); }
                 }
             }
         }

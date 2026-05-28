@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::sequenced_task_runner::SequencedTaskRunner;
 use crate::task::Task;
+use crate::task_monitor::TaskMonitor;
 use crate::task_runner::TaskRunner;
 use crate::task_traits::TaskTraits;
 use crate::thread_pool::delayed_task_manager::DelayedTaskManager;
@@ -16,16 +17,32 @@ pub struct ThreadPool {
     task_tracker: Arc<TaskTracker>,
     delayed_task_manager: Arc<DelayedTaskManager>,
     thread_group: Arc<ThreadGroup>,
+    monitor: Option<Arc<TaskMonitor>>,
 }
 
 impl ThreadPool {
     pub fn new(num_threads: usize) -> Arc<Self> {
-        let thread_group = ThreadGroup::new(num_threads);
+        Self::new_impl(num_threads, None)
+    }
+
+    /// Create a thread pool with task monitoring enabled.
+    ///
+    /// All tasks posted via `post_task`, `create_sequenced_task_runner`, and
+    /// `create_task_runner` will have their queue time and execution time
+    /// measured and reported to the monitor's `on_metrics` callback.  Workers
+    /// are registered with the monitor for hang detection.
+    pub fn new_with_monitor(num_threads: usize, monitor: Arc<TaskMonitor>) -> Arc<Self> {
+        Self::new_impl(num_threads, Some(monitor))
+    }
+
+    fn new_impl(num_threads: usize, monitor: Option<Arc<TaskMonitor>>) -> Arc<Self> {
+        let thread_group = ThreadGroup::new(num_threads, monitor.as_ref().map(Arc::clone));
         let delayed_task_manager = DelayedTaskManager::new(Arc::clone(&thread_group));
         Arc::new(Self {
             task_tracker: Arc::new(TaskTracker::new()),
             delayed_task_manager,
             thread_group,
+            monitor,
         })
     }
 
@@ -68,6 +85,7 @@ impl ThreadPool {
             traits,
             Arc::clone(&self.thread_group),
             Arc::clone(&self.delayed_task_manager),
+            self.monitor.as_ref().map(Arc::clone),
         )
     }
 
@@ -78,6 +96,7 @@ impl ThreadPool {
             traits,
             Arc::clone(&self.thread_group),
             Arc::clone(&self.delayed_task_manager),
+            self.monitor.as_ref().map(Arc::clone),
         ))
     }
 
@@ -90,15 +109,22 @@ impl ThreadPool {
     }
 
     // Wraps the callback to enforce shutdown behavior at execution time.
+    // If a monitor is configured, also wraps with timing (queue + execution).
     fn wrap(
         &self,
         traits: TaskTraits,
         callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Box<dyn FnOnce() + Send + 'static> {
+        // Timing wrapper is innermost so queue_time is post→execution-start,
+        // and execution_time only covers the original callback (not shutdown
+        // bookkeeping). SkipOnShutdown tasks that are dropped never call the
+        // timing wrapper, so on_metrics is not invoked for skipped tasks.
+        let callback = match self.monitor.as_ref() {
+            Some(m) => m.wrap_task(callback),
+            None => callback,
+        };
         let tracker = Arc::clone(&self.task_tracker);
         Box::new(move || {
-            // SkipOnShutdown tasks that were posted before shutdown but haven't
-            // run yet are dropped here without executing.
             if tracker.is_shutdown_started()
                 && traits.shutdown_behavior
                     == crate::task_traits::TaskShutdownBehavior::SkipOnShutdown
@@ -106,8 +132,6 @@ impl ThreadPool {
                 return;
             }
             callback();
-            // BlockShutdown count was incremented at post time (will_post_task),
-            // so we only need to decrement here after execution completes.
             tracker.after_run_task(&traits);
         })
     }
