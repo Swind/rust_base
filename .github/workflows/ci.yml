@@ -35,13 +35,13 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check formatting
-        run: cargo +nightly fmt --check
+        run: cargo +nightly fmt --all --check
 
       - name: Clippy
-        run: cargo +stable clippy -- -D warnings
+        run: cargo +stable clippy --workspace -- -D warnings
 
       - name: Run tests
-        run: cargo +stable test
+        run: cargo +stable test --workspace
 
       - name: Build examples
-        run: cargo +stable build --examples
+        run: cargo +stable build --workspace --examples
