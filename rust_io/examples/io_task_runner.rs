@@ -23,7 +23,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use rust_task::{FdWatchController, FdWatcher, IoTaskRunner, TaskRunner, WatchMode};
+    use rust_io::{FdWatchController, FdWatcher, IoTaskRunner, WatchMode};
+    use rust_task::TaskRunner;
     use std::os::unix::io::RawFd;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex, Weak};

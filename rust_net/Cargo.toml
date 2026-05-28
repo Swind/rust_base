@@ -1,0 +1,14 @@
+[package]
+name = "rust_net"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+rust_io = { path = "../rust_io" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rust_task = { path = "../rust_task" }

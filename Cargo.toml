@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust_task"]
+members = ["rust_task", "rust_io", "rust_net"]
 resolver = "2"
 
 [workspace.dependencies]

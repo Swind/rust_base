@@ -26,7 +26,9 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use rust_task::{IoTaskRunner, SocketPosix, TaskRunner};
+    use rust_net::SocketPosix;
+    use rust_io::IoTaskRunner;
+    use rust_task::TaskRunner;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::sync::{Arc, Barrier};

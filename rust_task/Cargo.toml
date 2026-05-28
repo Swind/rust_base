@@ -3,10 +3,8 @@ name = "rust_task"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-
 [lib]
 path = "lib.rs"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rust_io = { path = "../rust_io" }

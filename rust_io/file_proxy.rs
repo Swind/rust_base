@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::io_task_runner::IoTaskRunner;
-use crate::task_runner::TaskRunner;
-use crate::task_traits::TaskTraits;
-use crate::thread_pool::thread_pool::ThreadPool;
+use rust_task::task_runner::TaskRunner;
+use rust_task::task_traits::TaskTraits;
+use rust_task::thread_pool::thread_pool::ThreadPool;
 
 /// Async file I/O backed by a blocking thread pool.
 ///
@@ -213,7 +213,7 @@ fn blocking_append(path: &Path, data: &[u8]) -> io::Result<usize> {
 mod tests {
     use super::*;
     use crate::io_task_runner::IoTaskRunner;
-    use crate::thread_pool::thread_pool::ThreadPool;
+    use rust_task::thread_pool::thread_pool::ThreadPool;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
 

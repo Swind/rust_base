@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::sequence_token::SequenceToken;
-use crate::sequenced_task_runner::{CurrentDefaultHandle, SequencedTaskRunner};
-use crate::task_monitor::TaskMonitor;
-use crate::task_runner::TaskRunner;
-use crate::thread_pool::worker_thread::ScopedSequenceToken;
+use rust_task::sequence_token::SequenceToken;
+use rust_task::sequenced_task_runner::{CurrentDefaultHandle, SequencedTaskRunner};
+use rust_task::task_monitor::TaskMonitor;
+use rust_task::task_runner::TaskRunner;
+use rust_task::thread_pool::worker_thread::ScopedSequenceToken;
 
 // ── Public types
 // ──────────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ impl TaskRunner for IoTaskRunner {
         task: Box<dyn FnOnce() + Send + 'static>,
         reply: Box<dyn FnOnce() + Send + 'static>,
     ) -> bool {
-        let reply_runner = crate::sequenced_task_runner::current_default();
+        let reply_runner = rust_task::sequenced_task_runner::current_default();
         self.post_task(Box::new(move || {
             task();
             if let Some(r) = reply_runner {

@@ -22,7 +22,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use rust_task::{FileProxy, IoTaskRunner, TaskRunner, ThreadPool};
+    use rust_io::{FileProxy, IoTaskRunner};
+    use rust_task::{TaskRunner, ThreadPool};
     use std::sync::{Arc, Barrier, Mutex};
 
     fn temp_path(tag: &str) -> std::path::PathBuf {

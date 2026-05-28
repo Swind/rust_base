@@ -12,7 +12,9 @@
 //! Run with:
 //!   cargo run --example task_monitor
 
-use rust_task::{HangInfo, IoTaskRunner, TaskMetrics, TaskMonitor, TaskRunner, TaskTraits, ThreadPool};
+use rust_task::{HangInfo, TaskMetrics, TaskMonitor, TaskRunner, TaskTraits, ThreadPool};
+#[cfg(target_os = "linux")]
+use rust_io::IoTaskRunner;
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 

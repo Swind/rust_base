@@ -4,7 +4,7 @@ use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::io_task_runner::{FdWatchController, FdWatcher, IoTaskRunner, WatchMode};
+use rust_io::{FdWatchController, FdWatcher, IoTaskRunner, WatchMode};
 
 const INVALID_FD: i32 = -1;
 
@@ -506,8 +506,8 @@ fn check_connect_error(fd: RawFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io_task_runner::IoTaskRunner;
-    use crate::task_runner::TaskRunner;
+    use rust_io::IoTaskRunner;
+    use rust_task::TaskRunner;
     use std::sync::{Arc, Barrier};
 
     // Create a connected Unix socket pair; both ends are non-blocking.

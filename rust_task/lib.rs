@@ -1,12 +1,6 @@
 pub mod bind;
-#[cfg(target_os = "linux")]
-pub mod file_proxy;
-#[cfg(target_os = "linux")]
-pub mod io_task_runner;
 pub mod sequence_token;
 pub mod sequenced_task_runner;
-#[cfg(target_os = "linux")]
-pub mod socket_posix;
 pub mod task;
 pub mod task_monitor;
 pub mod task_runner;
@@ -14,16 +8,9 @@ pub mod task_traits;
 pub mod thread_pool;
 pub mod timer;
 
-// Convenient re-exports for the most commonly used public types.
 pub use bind::{IntoArc, bind_once, bind_repeating};
-#[cfg(target_os = "linux")]
-pub use file_proxy::FileProxy;
-#[cfg(target_os = "linux")]
-pub use io_task_runner::{FdWatchController, FdWatcher, IoTaskRunner, WatchMode};
 pub use sequence_token::SequenceToken;
 pub use sequenced_task_runner::SequencedTaskRunner;
-#[cfg(target_os = "linux")]
-pub use socket_posix::SocketPosix;
 pub use task_monitor::{HangInfo, TaskMetrics, TaskMonitor, WorkerSlot};
 pub use task_runner::TaskRunner;
 pub use task_traits::{TaskPriority, TaskShutdownBehavior, TaskTraits, ThreadPolicy};
