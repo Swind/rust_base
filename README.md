@@ -36,6 +36,9 @@ ThreadPool  (public API)
 - **`runs_tasks_in_current_sequence`** — lets a runner verify it is running on its own sequence
 - **`TaskTraits`** — priority, shutdown behavior, thread policy per task
 - **`bind_once`** — binds `Arc<T>` or `Weak<T>` to a callback; `Weak` variant silently skips if the object has been dropped
+- **`IoTaskRunner`** — single-threaded event loop for async I/O via epoll (Linux); supports `FdWatcher` with one-shot and persistent watch modes
+- **`SocketPosix`** — async TCP client with Chromium-style `Read` / `ReadIfReady` / `Write` / `Connect` callbacks
+- **`TaskMonitor`** — queue-time + execution-time metrics and hang detection across `ThreadPool` and `IoTaskRunner`
 
 ### Shutdown behaviors
 
@@ -48,6 +51,35 @@ ThreadPool  (public API)
 ### Not implemented
 
 `SingleThreadTaskRunner`, `BrowserThread`, `MessagePump` / `RunLoop`, `PostJob`, `CancelableTaskTracker`, `UpdateableSequencedTaskRunner`, `SequenceLocalStorageSlot`.
+
+---
+
+## TaskMonitor
+
+`TaskMonitor` measures queue time, execution time, and long-running tasks across a `ThreadPool` and/or `IoTaskRunner`.
+
+```rust
+use rust_task::{TaskMonitor, ThreadPool, IoTaskRunner};
+use std::time::Duration;
+
+let monitor = TaskMonitor::builder()
+    // called after every task completes
+    .on_metrics(|m| println!("queue={:?}  exec={:?}", m.queue_time, m.execution_time))
+    // called (repeatedly) when a worker is stuck longer than the threshold
+    .hang_threshold(Duration::from_secs(5))
+    .watchdog_interval(Duration::from_secs(1))
+    .on_hang(|h| eprintln!("worker {} stuck for {:?}", h.worker_id, h.stuck_duration))
+    .build();
+
+let pool = ThreadPool::new_with_monitor(4, Arc::clone(&monitor));
+let io   = IoTaskRunner::new_with_monitor(Arc::clone(&monitor));
+```
+
+- **Queue time** is measured from the `post_task` call to the moment a worker picks it up.
+- **Execution time** covers only the user callback itself.
+- Tasks that are skipped at shutdown (i.e. `SkipOnShutdown` tasks dropped after `shutdown()`) never trigger `on_metrics`.
+- Hang detection is opt-in: the watchdog thread is only started when `hang_threshold` is set.
+- `ThreadPool::new` / `IoTaskRunner::new` take no monitor and have zero overhead.
 
 ---
 
@@ -197,8 +229,18 @@ let traits = TaskTraits {
 
 ## Examples
 
+| Example | What it shows |
+|---------|---------------|
+| `event_bus` | Event bus on `SequencedTaskRunner`: ordered dispatch, safe re-entrant publish, auto-cancel via `Weak` |
+| `io_task_runner` | epoll-backed I/O: one-shot watch, persistent watch, lifetime-safe watch via `Weak` |
+| `socket_posix` | Async TCP client: connect + read/write, `ReadIfReady`, streaming with callback chaining |
+| `repeating_timer` | Repeating timer built on `post_delayed_task` |
+| `task_monitor` | Queue/execution metrics via `on_metrics`; hang detection via `on_hang` |
+
 ```bash
 cargo run --example event_bus
+cargo run --example io_task_runner
+cargo run --example socket_posix
+cargo run --example repeating_timer
+cargo run --example task_monitor
 ```
-
-`examples/event_bus.rs` demonstrates building an event bus on top of `SequencedTaskRunner`, showing ordered dispatch, serialized subscribe/unsubscribe, safe re-entrant publish, and automatic cancellation via `Weak`.
