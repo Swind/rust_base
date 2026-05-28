@@ -9,6 +9,7 @@ use crate::io_task_runner::{FdWatchController, FdWatcher, IoTaskRunner, WatchMod
 const INVALID_FD: i32 = -1;
 
 type ConnectCb = Box<dyn FnOnce(io::Result<()>) + Send>;
+type AcceptCb = Box<dyn FnOnce(io::Result<Arc<SocketPosix>>) + Send>;
 
 // ── Pending operations
 // ────────────────────────────────────────────────────────
@@ -31,25 +32,34 @@ struct WriteOp {
 /// Async TCP socket backed by `IoTaskRunner`.
 ///
 /// Mirrors Chromium's `net::SocketPosix`: wraps a non-blocking fd and exposes
-/// callback-based connect / read / write operations.  All methods that touch
-/// epoll (`connect`, `read`, `read_if_ready`, `write`) **must be called from
-/// the IO thread** (i.e. from within a task running on an `IoTaskRunner`).
+/// callback-based connect / read / write / accept operations.  All methods
+/// that touch epoll **must be called from the IO thread**.
 ///
-/// # Lifecycle
+/// # Client lifecycle
 ///
 /// ```ignore
-/// // From a task on the IO thread:
 /// let socket = SocketPosix::new();
 /// socket.open(&addr)?;
-///
 /// let s = Arc::clone(&socket);
 /// socket.connect(addr, move |result| {
 ///     result.unwrap();
-///     s.read(1024, move |result| {
-///         let data = result.unwrap();
-///         println!("received {} bytes", data.len());
-///         // call read() again to continue reading
-///     });
+///     s.read(1024, move |result| { println!("{} bytes", result.unwrap().len()); });
+/// });
+/// ```
+///
+/// # Server lifecycle
+///
+/// ```ignore
+/// let server = SocketPosix::new();
+/// server.open(&addr)?;
+/// server.bind(addr)?;
+/// server.listen(128)?;
+///
+/// let srv = Arc::clone(&server);
+/// server.accept(move |result| {
+///     let client = result.unwrap();
+///     client.read(1024, move |result| { /* handle data */ });
+///     // call srv.accept() again to accept the next connection
 /// });
 /// ```
 pub struct SocketPosix {
@@ -59,6 +69,7 @@ pub struct SocketPosix {
     pending_read: Mutex<Option<ReadOp>>,
     pending_write: Mutex<Option<WriteOp>>,
     pending_connect: Mutex<Option<ConnectCb>>,
+    pending_accept: Mutex<Option<AcceptCb>>,
 }
 
 impl SocketPosix {
@@ -71,10 +82,11 @@ impl SocketPosix {
             pending_read: Mutex::new(None),
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
+            pending_accept: Mutex::new(None),
         })
     }
 
-    /// Wrap an already-connected fd (e.g. from `accept(2)`).
+    /// Wrap an already-connected fd (e.g. from `accept4(2)`).
     ///
     /// The socket takes ownership of `fd` and closes it on drop.
     pub fn from_fd(fd: RawFd) -> Arc<Self> {
@@ -85,6 +97,7 @@ impl SocketPosix {
             pending_read: Mutex::new(None),
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
+            pending_accept: Mutex::new(None),
         })
     }
 
@@ -197,6 +210,61 @@ impl SocketPosix {
         self.arm_write();
     }
 
+    /// Bind the socket to `addr`.  Sets `SO_REUSEADDR` automatically.
+    ///
+    /// Call after `open()` and before `listen()`.
+    pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        let fd = self.fd.load(Ordering::Relaxed);
+        assert!(fd >= 0, "socket not open");
+        // SO_REUSEADDR avoids "address already in use" after a quick restart.
+        let one: libc::c_int = 1;
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+        syscall_bind(fd, &addr)
+    }
+
+    /// Start listening for incoming connections.
+    ///
+    /// Call after `bind()` and before `accept()`.
+    pub fn listen(&self, backlog: i32) -> io::Result<()> {
+        let fd = self.fd.load(Ordering::Relaxed);
+        assert!(fd >= 0, "socket not open");
+        let rc = unsafe { libc::listen(fd, backlog) };
+        if rc < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    }
+
+    /// Accept one incoming connection.  Callback receives a new `SocketPosix`
+    /// for the client, or an error.
+    ///
+    /// The callback is one-shot: call `accept()` again inside the callback to
+    /// keep accepting.  Must be called from the IO thread.
+    pub fn accept(self: &Arc<Self>, cb: impl FnOnce(io::Result<Arc<SocketPosix>>) + Send + 'static) {
+        let fd = self.fd.load(Ordering::Relaxed);
+        assert!(fd >= 0, "socket not open");
+
+        match do_accept(fd) {
+            Ok(client_fd) => cb(Ok(SocketPosix::from_fd(client_fd))),
+            Err(e) if e.raw_os_error() == Some(libc::EAGAIN) => {
+                *self.pending_accept.lock().unwrap() = Some(Box::new(cb));
+                self.arm_read();
+            }
+            Err(e) => cb(Err(e)),
+        }
+    }
+
+    /// Cancel a pending `accept`.
+    pub fn cancel_accept(&self) {
+        *self.pending_accept.lock().unwrap() = None;
+        self.read_watcher.lock().unwrap().stop_watching_file_descriptor();
+    }
+
     /// Cancel a pending `read_if_ready` or `read`.
     pub fn cancel_read(&self) {
         *self.pending_read.lock().unwrap() = None;
@@ -216,6 +284,7 @@ impl SocketPosix {
         *self.pending_read.lock().unwrap() = None;
         *self.pending_write.lock().unwrap() = None;
         *self.pending_connect.lock().unwrap() = None;
+        *self.pending_accept.lock().unwrap() = None;
         let fd = self.fd.swap(INVALID_FD, Ordering::Relaxed);
         if fd >= 0 {
             unsafe { libc::close(fd) };
@@ -258,6 +327,7 @@ impl Default for SocketPosix {
             pending_read: Mutex::new(None),
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
+            pending_accept: Mutex::new(None),
         }
     }
 }
@@ -273,10 +343,19 @@ impl Drop for SocketPosix {
 
 impl FdWatcher for SocketPosix {
     fn on_file_can_read_without_blocking(&self, fd: RawFd) {
-        // Extract the pending op before calling any callback.  Rust extends the
-        // lifetime of a temporary MutexGuard through an entire `match` scrutinee,
-        // so using `match self.pending_read.lock()...take()` would hold the lock
-        // while the callback runs — deadlocking if the callback calls read() again.
+        // A listening socket becomes readable when a new connection arrives;
+        // check pending_accept before the regular read path.
+        let accept_cb = self.pending_accept.lock().unwrap().take();
+        if let Some(cb) = accept_cb {
+            cb(do_accept(fd).map(SocketPosix::from_fd));
+            return;
+        }
+
+        // Extract the pending read op before calling any callback.  Rust extends
+        // the lifetime of a temporary MutexGuard through an entire `match`
+        // scrutinee, so using `match self.pending_read.lock()...take()` would
+        // hold the lock while the callback runs — deadlocking if the callback
+        // calls read() again.
         let op = self.pending_read.lock().unwrap().take();
         match op {
             Some(ReadOp::ReadIfReady(cb)) => cb(Ok(())),
@@ -319,6 +398,55 @@ impl FdWatcher for SocketPosix {
 
 fn is_would_block(err: &io::Error) -> bool {
     err.raw_os_error() == Some(libc::EAGAIN)
+}
+
+fn do_accept(fd: RawFd) -> io::Result<RawFd> {
+    let new_fd = unsafe {
+        libc::accept4(
+            fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+        )
+    };
+    if new_fd >= 0 { Ok(new_fd) } else { Err(io::Error::last_os_error()) }
+}
+
+fn syscall_bind(fd: RawFd, addr: &SocketAddr) -> io::Result<()> {
+    let rc = match addr {
+        SocketAddr::V4(a) => {
+            let sa = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: a.port().to_be(),
+                sin_addr: libc::in_addr { s_addr: u32::from(*a.ip()).to_be() },
+                sin_zero: [0; 8],
+            };
+            unsafe {
+                libc::bind(
+                    fd,
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            }
+        }
+        SocketAddr::V6(a) => {
+            let sa = libc::sockaddr_in6 {
+                sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                sin6_port: a.port().to_be(),
+                sin6_flowinfo: 0,
+                sin6_addr: libc::in6_addr { s6_addr: a.ip().octets() },
+                sin6_scope_id: 0,
+            };
+            unsafe {
+                libc::bind(
+                    fd,
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                )
+            }
+        }
+    };
+    if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 fn syscall_connect(fd: RawFd, addr: &SocketAddr) -> io::Result<()> {
@@ -521,6 +649,153 @@ mod tests {
         assert_eq!(&buf[..n as usize], b"hello world");
         assert_eq!(*written.lock().unwrap(), 11);
         close_fd(fd1);
+    }
+
+    // ── bind / listen / accept ────────────────────────────────────────────────
+
+    // Helper: get the local address a bound fd is listening on.
+    fn get_local_addr(fd: RawFd) -> std::net::SocketAddr {
+        let mut sa = libc::sockaddr_in {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: libc::in_addr { s_addr: 0 },
+            sin_zero: [0; 8],
+        };
+        let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        unsafe { libc::getsockname(fd, &mut sa as *mut _ as *mut libc::sockaddr, &mut len) };
+        std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            u16::from_be(sa.sin_port),
+        ))
+    }
+
+    /// bind + listen + accept delivers a new SocketPosix for the client.
+    ///
+    /// The server socket is created outside the post_task closure so the test
+    /// body holds a strong Arc; IoTaskRunner only keeps Weak references to
+    /// FdWatchers, so the object must be kept alive externally.
+    #[test]
+    fn accept_delivers_new_socket() {
+        let io = IoTaskRunner::new();
+        let server = SocketPosix::new();
+
+        let accepted = Arc::new(Mutex::new(false));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let a = Arc::clone(&accepted);
+        let b = Arc::clone(&barrier);
+        let srv = Arc::clone(&server);
+        io.post_task(Box::new(move || {
+            let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+            srv.open(&addr).unwrap();
+            srv.bind(addr).unwrap();
+            srv.listen(1).unwrap();
+
+            let bound_addr = get_local_addr(srv.fd.load(Ordering::Relaxed));
+            std::thread::spawn(move || {
+                std::net::TcpStream::connect(bound_addr).unwrap();
+            });
+
+            srv.accept(move |result| {
+                result.expect("accept failed");
+                *a.lock().unwrap() = true;
+                b.wait();
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert!(*accepted.lock().unwrap());
+    }
+
+    /// accept() is one-shot; calling it again inside the callback accepts the
+    /// next connection.
+    #[test]
+    fn accept_can_repeat_for_multiple_connections() {
+        let io = IoTaskRunner::new();
+        let server = SocketPosix::new();
+
+        let count = Arc::new(Mutex::new(0usize));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let c = Arc::clone(&count);
+        let b = Arc::clone(&barrier);
+        let srv = Arc::clone(&server);
+        io.post_task(Box::new(move || {
+            let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+            srv.open(&addr).unwrap();
+            srv.bind(addr).unwrap();
+            srv.listen(2).unwrap();
+
+            let bound_addr = get_local_addr(srv.fd.load(Ordering::Relaxed));
+
+            // Two clients connect sequentially; keep them alive until both are accepted.
+            std::thread::spawn(move || {
+                let _c1 = std::net::TcpStream::connect(bound_addr).unwrap();
+                let _c2 = std::net::TcpStream::connect(bound_addr).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            });
+
+            let srv2 = Arc::clone(&srv);
+            srv.accept(move |result| {
+                result.expect("first accept failed");
+                *c.lock().unwrap() += 1;
+
+                let c2 = Arc::clone(&c);
+                let b2 = Arc::clone(&b);
+                srv2.accept(move |result| {
+                    result.expect("second accept failed");
+                    *c2.lock().unwrap() += 1;
+                    b2.wait();
+                });
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert_eq!(*count.lock().unwrap(), 2);
+    }
+
+    /// Data written by the server via the accepted SocketPosix arrives at the
+    /// client (std::net::TcpStream).
+    #[test]
+    fn server_can_write_to_accepted_client() {
+        use std::io::Read as _;
+
+        let io = IoTaskRunner::new();
+        let server = SocketPosix::new();
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        let b = Arc::clone(&barrier);
+        let srv = Arc::clone(&server);
+        io.post_task(Box::new(move || {
+            let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+            srv.open(&addr).unwrap();
+            srv.bind(addr).unwrap();
+            srv.listen(1).unwrap();
+
+            let bound_addr = get_local_addr(srv.fd.load(Ordering::Relaxed));
+
+            let b2 = Arc::clone(&b);
+            std::thread::spawn(move || {
+                let mut stream = std::net::TcpStream::connect(bound_addr).unwrap();
+                let mut buf = [0u8; 64];
+                let n = stream.read(&mut buf).unwrap();
+                assert_eq!(&buf[..n], b"ping");
+                b2.wait();
+            });
+
+            srv.accept(move |result| {
+                let client = result.expect("accept failed");
+                client.write(b"ping".to_vec(), |result| {
+                    result.expect("write failed");
+                });
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
     }
 
     // ── connect ──────────────────────────────────────────────────────────────
