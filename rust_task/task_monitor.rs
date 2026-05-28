@@ -29,12 +29,15 @@ pub struct HangInfo {
 // ── TaskMonitor
 // ───────────────────────────────────────────────────────────────
 
+type MetricsFn = Arc<dyn Fn(&TaskMetrics) + Send + Sync>;
+type HangFn = Arc<dyn Fn(&HangInfo) + Send + Sync>;
+
 struct Inner {
     reference: Instant,
     slots: Mutex<Vec<Arc<AtomicU64>>>, // one per registered worker; 0 = idle
     hang_threshold: Duration,
-    on_metrics: Option<Arc<dyn Fn(&TaskMetrics) + Send + Sync>>,
-    on_hang: Option<Arc<dyn Fn(&HangInfo) + Send + Sync>>,
+    on_metrics: Option<MetricsFn>,
+    on_hang: Option<HangFn>,
     shutdown: AtomicBool,
     shutdown_notify: (Mutex<bool>, Condvar),
 }
@@ -158,8 +161,8 @@ impl Drop for WorkerSlot {
 pub struct TaskMonitorBuilder {
     hang_threshold: Option<Duration>,
     watchdog_interval: Duration,
-    on_metrics: Option<Arc<dyn Fn(&TaskMetrics) + Send + Sync>>,
-    on_hang: Option<Arc<dyn Fn(&HangInfo) + Send + Sync>>,
+    on_metrics: Option<MetricsFn>,
+    on_hang: Option<HangFn>,
 }
 
 impl TaskMonitorBuilder {
