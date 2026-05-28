@@ -1,4 +1,4 @@
-//! FilePosix demo — async file I/O backed by a blocking thread pool.
+//! FileProxy demo — async file I/O backed by a blocking thread pool.
 //!
 //! Three demos:
 //!
@@ -11,7 +11,7 @@
 //!     actual reads run in parallel on the thread pool.
 //!
 //! Run with:
-//!   cargo run --example file_posix
+//!   cargo run --example file_proxy
 
 fn main() {
     #[cfg(target_os = "linux")]
@@ -22,7 +22,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use rust_task::{FilePosix, IoTaskRunner, TaskRunner, TaskTraits, ThreadPool};
+    use rust_task::{FileProxy, IoTaskRunner, TaskRunner, ThreadPool};
     use std::sync::{Arc, Barrier, Mutex};
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -42,7 +42,6 @@ mod linux {
         println!("=== Demo 1: write then read ===");
 
         let pool = ThreadPool::new(2);
-        let runner = pool.create_task_runner(TaskTraits { may_block: true, ..TaskTraits::default() });
         let io = IoTaskRunner::new();
         let path = temp_path("write_read");
 
@@ -52,12 +51,13 @@ mod linux {
         let r = Arc::clone(&received);
         let b = Arc::clone(&barrier);
         let p = path.clone();
-        let runner2 = pool.create_task_runner(TaskTraits { may_block: true, ..TaskTraits::default() });
+        let pool2 = Arc::clone(&pool);
         io.post_task(Box::new(move || {
-            let file_w = FilePosix::new(&p, runner);
-            let file_r = FilePosix::new(&p, runner2);
+            // Both proxies share the same pool — no need to manage runners manually.
+            let file_w = FileProxy::new(&p, Arc::clone(&pool2));
+            let file_r = FileProxy::new(&p, pool2);
 
-            file_w.write_all(b"hello from FilePosix".to_vec(), move |result| {
+            file_w.write_all(b"hello from FileProxy".to_vec(), move |result| {
                 result.expect("write failed");
                 println!("  write complete, now reading back...");
 
@@ -77,7 +77,7 @@ mod linux {
         pool.shutdown();
         std::fs::remove_file(&path).ok();
 
-        assert_eq!(*received.lock().unwrap(), b"hello from FilePosix");
+        assert_eq!(*received.lock().unwrap(), b"hello from FileProxy");
         println!();
     }
 
@@ -96,15 +96,9 @@ mod linux {
         let pool2 = Arc::clone(&pool);
 
         io.post_task(Box::new(move || {
-            let make = |pool: &ThreadPool| {
-                FilePosix::new(
-                    &p,
-                    pool.create_task_runner(TaskTraits { may_block: true, ..TaskTraits::default() }),
-                )
-            };
-            let f1 = make(&pool2);
-            let f2 = make(&pool2);
-            let f3 = make(&pool2);
+            let f1 = FileProxy::new(&p, Arc::clone(&pool2));
+            let f2 = FileProxy::new(&p, Arc::clone(&pool2));
+            let f3 = FileProxy::new(&p, pool2);
 
             f1.append(b"one ".to_vec(), move |r| {
                 r.unwrap();
@@ -138,27 +132,22 @@ mod linux {
     fn demo_concurrent_reads() {
         println!("=== Demo 3: concurrent reads ===");
 
-        // Write a file to read from.
         let path = temp_path("concurrent");
         std::fs::write(&path, b"abcdefghij").unwrap();
 
-        // Use a 4-worker pool so reads can overlap.
         let pool = ThreadPool::new(4);
         let io = IoTaskRunner::new();
 
         let results: Arc<Mutex<Vec<(u64, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
-        // Only main + the last arriving callback need to meet at the barrier.
-        // All 3 callbacks run on the single IO thread sequentially, so having
-        // each one call barrier.wait() would deadlock (the IO thread would block
-        // on the first wait and never process the remaining callbacks).
+        // Only main + the last arriving callback meet at the barrier.
+        // All callbacks run on the single IO thread sequentially, so blocking
+        // each one would deadlock — only the last one (when all results are in)
+        // signals the main thread.
         let barrier = Arc::new(Barrier::new(2));
         const NUM_READS: usize = 3;
 
-        let offsets = [0u64, 3, 7];
-        for &offset in &offsets {
-            let runner =
-                pool.create_task_runner(TaskTraits { may_block: true, ..TaskTraits::default() });
-            let file = FilePosix::new(&path, runner);
+        for &offset in &[0u64, 3, 7] {
+            let file = FileProxy::new(&path, Arc::clone(&pool));
             let r = Arc::clone(&results);
             let b = Arc::clone(&barrier);
 

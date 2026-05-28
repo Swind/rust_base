@@ -6,45 +6,62 @@ use std::sync::Arc;
 
 use crate::io_task_runner::IoTaskRunner;
 use crate::task_runner::TaskRunner;
+use crate::task_traits::TaskTraits;
+use crate::thread_pool::thread_pool::ThreadPool;
 
 /// Async file I/O backed by a blocking thread pool.
 ///
-/// Regular files do not support epoll, so `FilePosix` offloads all blocking
-/// `pread`/`pwrite` calls to a caller-supplied `TaskRunner` and posts each
-/// result callback back to the `IoTaskRunner` that was current at call time.
+/// Mirrors Chromium's `base::FileProxy`: wraps a file path and a
+/// `TaskRunner` that offloads blocking `pread`/`pwrite` calls so the
+/// IO thread is never stalled.  Each result callback is posted back to
+/// the `IoTaskRunner` that was current at call time, making it safe to
+/// chain further file or socket operations from inside a callback.
 ///
-/// All methods **must be called from the IO thread**.  The callback always
-/// runs on that same IO thread, so it is safe to chain further file or socket
-/// operations from inside a callback.
-///
-/// # Concurrency
-///
-/// Each call opens and closes the file independently.  If you need to
-/// serialise concurrent access to the same file, pass a
-/// `SequencedTaskRunner` as `blocking_runner`.
+/// All methods **must be called from the IO thread**.
 ///
 /// # Usage
 ///
 /// ```ignore
+/// let pool = ThreadPool::new(4);
+///
 /// // From a task on the IO thread:
-/// let pool = ThreadPool::new(2);
-/// let runner = pool.create_task_runner(TaskTraits::default());
-/// let file = FilePosix::new("/tmp/data.bin", runner);
+/// let file = FileProxy::new("/tmp/data.bin", Arc::clone(&pool));
 ///
 /// file.read_all(move |result| {
-///     let data = result.unwrap();
-///     println!("read {} bytes", data.len());
-///     // callback runs on the IO thread — safe to call file.write() here
+///     println!("read {} bytes", result.unwrap().len());
+///     // callback runs on the IO thread
 /// });
 /// ```
-pub struct FilePosix {
+///
+/// # Concurrency
+///
+/// `new()` creates a `SequencedTaskRunner` so that multiple operations
+/// posted to the same `FileProxy` are serialised on the thread pool.
+/// If you need a custom scheduling policy use [`FileProxy::with_runner`].
+pub struct FileProxy {
     path: PathBuf,
-    blocking_runner: Arc<dyn TaskRunner>,
+    runner: Arc<dyn TaskRunner>,
 }
 
-impl FilePosix {
-    pub fn new(path: impl Into<PathBuf>, blocking_runner: Arc<dyn TaskRunner>) -> Self {
-        Self { path: path.into(), blocking_runner }
+impl FileProxy {
+    /// Create a `FileProxy` backed by `pool`.
+    ///
+    /// A `SequencedTaskRunner` is created internally so concurrent calls on
+    /// the same `FileProxy` are serialised.  Multiple `FileProxy` instances
+    /// can share the same `pool`.
+    pub fn new(path: impl Into<PathBuf>, pool: Arc<ThreadPool>) -> Self {
+        let runner = pool.create_sequenced_task_runner(
+            TaskTraits { may_block: true, ..TaskTraits::default() },
+        );
+        Self { path: path.into(), runner }
+    }
+
+    /// Create a `FileProxy` with a custom `TaskRunner`.
+    ///
+    /// Use this when you need a specific scheduling policy or want to share
+    /// a runner across multiple `FileProxy` instances.
+    pub fn with_runner(path: impl Into<PathBuf>, runner: Arc<dyn TaskRunner>) -> Self {
+        Self { path: path.into(), runner }
     }
 
     /// Read `len` bytes starting at `offset`.  Callback runs on the IO thread.
@@ -56,7 +73,7 @@ impl FilePosix {
     ) {
         let path = self.path.clone();
         let io = IoTaskRunner::current().expect("must be called from the IO thread");
-        self.blocking_runner.post_task(Box::new(move || {
+        self.runner.post_task(Box::new(move || {
             let result = blocking_pread(&path, offset, len);
             io.post_task(Box::new(move || cb(result)));
         }));
@@ -69,7 +86,7 @@ impl FilePosix {
     ) {
         let path = self.path.clone();
         let io = IoTaskRunner::current().expect("must be called from the IO thread");
-        self.blocking_runner.post_task(Box::new(move || {
+        self.runner.post_task(Box::new(move || {
             let result = std::fs::read(&path);
             io.post_task(Box::new(move || cb(result)));
         }));
@@ -86,7 +103,7 @@ impl FilePosix {
     ) {
         let path = self.path.clone();
         let io = IoTaskRunner::current().expect("must be called from the IO thread");
-        self.blocking_runner.post_task(Box::new(move || {
+        self.runner.post_task(Box::new(move || {
             let result = blocking_pwrite(&path, offset, &data);
             io.post_task(Box::new(move || cb(result)));
         }));
@@ -101,7 +118,7 @@ impl FilePosix {
     ) {
         let path = self.path.clone();
         let io = IoTaskRunner::current().expect("must be called from the IO thread");
-        self.blocking_runner.post_task(Box::new(move || {
+        self.runner.post_task(Box::new(move || {
             let result = std::fs::write(&path, &data);
             io.post_task(Box::new(move || cb(result)));
         }));
@@ -116,7 +133,7 @@ impl FilePosix {
     ) {
         let path = self.path.clone();
         let io = IoTaskRunner::current().expect("must be called from the IO thread");
-        self.blocking_runner.post_task(Box::new(move || {
+        self.runner.post_task(Box::new(move || {
             let result = blocking_append(&path, &data);
             io.post_task(Box::new(move || cb(result)));
         }));
@@ -196,8 +213,6 @@ fn blocking_append(path: &Path, data: &[u8]) -> io::Result<usize> {
 mod tests {
     use super::*;
     use crate::io_task_runner::IoTaskRunner;
-    use crate::task_runner::TaskRunner;
-    use crate::task_traits::TaskTraits;
     use crate::thread_pool::thread_pool::ThreadPool;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
@@ -209,10 +224,8 @@ mod tests {
         std::env::temp_dir().join(format!("rust_task_fp_{}_{}", std::process::id(), n))
     }
 
-    fn make_runner() -> (Arc<ThreadPool>, Arc<dyn TaskRunner>) {
-        let pool = ThreadPool::new(2);
-        let runner = pool.create_task_runner(TaskTraits::default());
-        (pool, runner)
+    fn make_pool() -> Arc<ThreadPool> {
+        ThreadPool::new(2)
     }
 
     #[test]
@@ -220,14 +233,14 @@ mod tests {
         let path = temp_path();
         std::fs::write(&path, b"hello world").unwrap();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let barrier = Arc::new(Barrier::new(2));
 
         let r = Arc::clone(&received);
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.read_all(move |result| {
                 *r.lock().unwrap() = result.unwrap();
@@ -248,14 +261,14 @@ mod tests {
         let path = temp_path();
         std::fs::write(&path, b"abcdefghij").unwrap();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let barrier = Arc::new(Barrier::new(2));
 
         let r = Arc::clone(&received);
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.read(3, 4, move |result| {
                 *r.lock().unwrap() = result.unwrap();
@@ -276,12 +289,12 @@ mod tests {
         let path = temp_path();
         std::fs::write(&path, b"0000000000").unwrap();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let barrier = Arc::new(Barrier::new(2));
 
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.write(3, b"XYZ".to_vec(), move |result| {
                 result.unwrap();
@@ -304,15 +317,14 @@ mod tests {
     #[test]
     fn write_all_creates_and_truncates_file() {
         let path = temp_path();
-        // Pre-populate with longer content to verify truncation.
         std::fs::write(&path, b"old long content here").unwrap();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let barrier = Arc::new(Barrier::new(2));
 
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.write_all(b"new".to_vec(), move |result| {
                 result.unwrap();
@@ -334,15 +346,15 @@ mod tests {
     fn append_grows_file_across_calls() {
         let path = temp_path();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let barrier = Arc::new(Barrier::new(2));
 
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, Arc::clone(&runner));
-        let file2 = FilePosix::new(&path, runner);
+        let file1 = FileProxy::new(&path, Arc::clone(&pool));
+        let file2 = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
-            file.append(b"foo".to_vec(), move |result| {
+            file1.append(b"foo".to_vec(), move |result| {
                 result.unwrap();
                 file2.append(b"bar".to_vec(), move |result| {
                     result.unwrap();
@@ -366,14 +378,14 @@ mod tests {
         let path = temp_path();
         std::fs::write(&path, b"check").unwrap();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let on_io = Arc::new(Mutex::new(false));
         let barrier = Arc::new(Barrier::new(2));
 
         let f = Arc::clone(&on_io);
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.read_all(move |result| {
                 result.unwrap();
@@ -392,16 +404,16 @@ mod tests {
 
     #[test]
     fn read_nonexistent_file_returns_error() {
-        let path = temp_path(); // never written to
+        let path = temp_path();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let got_error = Arc::new(Mutex::new(false));
         let barrier = Arc::new(Barrier::new(2));
 
         let e = Arc::clone(&got_error);
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, runner);
+        let file = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
             file.read_all(move |result| {
                 *e.lock().unwrap() = result.is_err();
@@ -420,20 +432,19 @@ mod tests {
     fn chained_write_then_read() {
         let path = temp_path();
 
-        let (pool, runner) = make_runner();
+        let pool = make_pool();
         let io = IoTaskRunner::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let barrier = Arc::new(Barrier::new(2));
 
         let r = Arc::clone(&received);
         let b = Arc::clone(&barrier);
-        let file = FilePosix::new(&path, Arc::clone(&runner));
-        let file2 = FilePosix::new(path.clone(), runner);
+        let file_w = FileProxy::new(&path, Arc::clone(&pool));
+        let file_r = FileProxy::new(&path, Arc::clone(&pool));
         io.post_task(Box::new(move || {
-            file.write_all(b"round-trip".to_vec(), move |result| {
+            file_w.write_all(b"round-trip".to_vec(), move |result| {
                 result.unwrap();
-                // Chain: read the file back from inside the write callback.
-                file2.read_all(move |result| {
+                file_r.read_all(move |result| {
                     *r.lock().unwrap() = result.unwrap();
                     b.wait();
                 });
