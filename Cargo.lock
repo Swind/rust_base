@@ -28,6 +28,3 @@ dependencies = [
 [[package]]
 name = "rust_task"
 version = "0.1.0"
-dependencies = [
- "rust_io",
-]

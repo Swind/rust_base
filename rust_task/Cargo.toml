@@ -6,5 +6,3 @@ edition = "2024"
 [lib]
 path = "lib.rs"
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-rust_io = { path = "../rust_io" }
