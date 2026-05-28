@@ -556,4 +556,84 @@ mod tests {
         io.shutdown();
         assert!(*connected.lock().unwrap());
     }
+
+    // ── callback chaining (regression for pending_read lock held during cb) ───
+
+    /// Calling read() from inside a read callback must not deadlock.
+    ///
+    /// Before the fix, `on_file_can_read_without_blocking` held the
+    /// `pending_read` lock through the entire match block (Rust temporary
+    /// lifetime extension).  A callback that called read() again would try to
+    /// re-acquire the same lock on the same thread → deadlock.
+    #[test]
+    fn read_callback_can_chain_another_read() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let done = Arc::new(Barrier::new(2));
+        let results: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let s = Arc::clone(&socket);
+        let d = Arc::clone(&done);
+        let r = Arc::clone(&results);
+        io.post_task(Box::new(move || {
+            let s2 = Arc::clone(&s);
+            let r2 = Arc::clone(&r);
+            s.read(64, move |result| {
+                r2.lock().unwrap().push(result.unwrap());
+                // Chain: register a second read from inside the first callback.
+                // The pending_read lock must already be released at this point.
+                s2.read(64, move |result| {
+                    r2.lock().unwrap().push(result.unwrap());
+                    d.wait();
+                });
+            });
+        }));
+
+        write_raw(fd1, b"one");
+        // Let the first read fire and register the second before writing again.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_raw(fd1, b"two");
+        done.wait();
+
+        io.shutdown();
+        let got = results.lock().unwrap();
+        assert_eq!(got[0], b"one");
+        assert_eq!(got[1], b"two");
+        close_fd(fd1);
+    }
+
+    /// Calling read() from inside a read_if_ready callback must not deadlock.
+    #[test]
+    fn read_if_ready_callback_can_chain_read() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let done = Arc::new(Barrier::new(2));
+        let received = Arc::new(Mutex::new(Vec::new()));
+
+        let s = Arc::clone(&socket);
+        let d = Arc::clone(&done);
+        let r = Arc::clone(&received);
+        io.post_task(Box::new(move || {
+            let s2 = Arc::clone(&s);
+            s.read_if_ready(move |result| {
+                result.unwrap();
+                // Data is ready; call read() from inside the readiness callback.
+                s2.read(64, move |result| {
+                    *r.lock().unwrap() = result.unwrap();
+                    d.wait();
+                });
+            });
+        }));
+
+        write_raw(fd1, b"ping");
+        done.wait();
+
+        io.shutdown();
+        assert_eq!(*received.lock().unwrap(), b"ping");
+        close_fd(fd1);
+    }
 }
