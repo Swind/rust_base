@@ -1,12 +1,6 @@
-[package]
-name = "rust_task"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["rust_task"]
+resolver = "2"
 
-[dependencies]
-
-[target.'cfg(target_os = "linux")'.dependencies]
+[workspace.dependencies]
 libc = "0.2"
-
-[lib]
-path = "lib.rs"
