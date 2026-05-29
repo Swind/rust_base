@@ -210,24 +210,23 @@ impl SocketPosix {
         self.arm_write();
     }
 
-    /// Bind the socket to `addr`.  Sets `SO_REUSEADDR` automatically.
+    /// Bind the socket to `addr`.
     ///
-    /// Call after `open()` and before `listen()`.
+    /// This is the raw `bind(2)`; TCP-level options such as `SO_REUSEADDR` live
+    /// one layer up in [`crate::TcpSocket`].  Call after `open()` and before
+    /// `listen()`.
     pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
         let fd = self.fd.load(Ordering::Relaxed);
         assert!(fd >= 0, "socket not open");
-        // SO_REUSEADDR avoids "address already in use" after a quick restart.
-        let one: libc::c_int = 1;
-        unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
-                &one as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            );
-        }
         syscall_bind(fd, &addr)
+    }
+
+    /// The local address the socket is bound to (`getsockname(2)`).
+    ///
+    /// Useful after binding to an ephemeral port (`addr:0`) to learn which port
+    /// the kernel assigned.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        getsockname_addr(self.fd.load(Ordering::Relaxed))
     }
 
     /// Start listening for incoming connections.
@@ -341,6 +340,14 @@ impl Drop for SocketPosix {
         if fd >= 0 {
             unsafe { libc::close(fd) };
         }
+    }
+}
+
+impl std::os::unix::io::AsRawFd for SocketPosix {
+    /// The current fd, or `-1` if the socket is unopened/closed.  Used by
+    /// [`crate::TcpSocket`] to set socket options without owning the fd.
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.load(Ordering::Relaxed)
     }
 }
 
@@ -487,6 +494,34 @@ fn syscall_connect(fd: RawFd, addr: &SocketAddr) -> io::Result<()> {
         }
     };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+fn getsockname_addr(fd: RawFd) -> io::Result<SocketAddr> {
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let rc =
+        unsafe { libc::getsockname(fd, &mut storage as *mut _ as *mut libc::sockaddr, &mut len) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    match storage.ss_family as libc::c_int {
+        libc::AF_INET => {
+            let sa = unsafe { &*(&storage as *const _ as *const libc::sockaddr_in) };
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+            Ok(SocketAddr::V4(std::net::SocketAddrV4::new(ip, u16::from_be(sa.sin_port))))
+        }
+        libc::AF_INET6 => {
+            let sa = unsafe { &*(&storage as *const _ as *const libc::sockaddr_in6) };
+            let ip = std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr);
+            Ok(SocketAddr::V6(std::net::SocketAddrV6::new(
+                ip,
+                u16::from_be(sa.sin6_port),
+                sa.sin6_flowinfo,
+                sa.sin6_scope_id,
+            )))
+        }
+        other => Err(io::Error::other(format!("unexpected address family {other}"))),
+    }
 }
 
 fn check_connect_error(fd: RawFd) -> io::Result<()> {
