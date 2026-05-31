@@ -19,11 +19,14 @@ type DoneCallback = Box<dyn FnOnce(io::Result<()>) + Send>;
 /// type pumps those bytes through the transport's callback-based `read`/`write`
 /// on the IO thread:
 ///
-/// - **plaintext write** → `conn.writer()` encrypts → `write_tls` → transport write
-/// - **plaintext read**  ← `conn.reader()` decrypts ← `read_tls` ← transport read
+/// - **plaintext write** → `conn.writer()` encrypts → `write_tls` → transport
+///   write
+/// - **plaintext read**  ← `conn.reader()` decrypts ← `read_tls` ← transport
+///   read
 ///
 /// `TlsClientSocket` itself implements [`StreamSocket`], so once the handshake
-/// completes an HTTP layer can treat it exactly like a plaintext `TcpClientSocket`.
+/// completes an HTTP layer can treat it exactly like a plaintext
+/// `TcpClientSocket`.
 ///
 /// Construct it on an already-*TCP-connected* transport, then call
 /// [`TlsClientSocket::handshake`] before reading or writing application data.

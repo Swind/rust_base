@@ -2,5 +2,13 @@
 members = ["rust_task", "rust_io", "rust_net"]
 resolver = "2"
 
+# Shared metadata inherited by each crate via `<field>.workspace = true`.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Swind/rust_base"
+authors = ["Swind"]
+
 [workspace.dependencies]
 libc = "0.2"

@@ -154,13 +154,22 @@ rust_task = { git = "https://github.com/Swind/rust_base" }
 # Linux only
 rust_io  = { git = "https://github.com/Swind/rust_base" }
 rust_net = { git = "https://github.com/Swind/rust_base" }
+
+# Enable async TLS / HTTPS support
+rust_net = { git = "https://github.com/Swind/rust_base", features = ["tls"] }
 ```
 
-Pin to a specific commit for reproducible builds:
+Pin to a specific commit or tag for reproducible builds:
 
 ```toml
 rust_task = { git = "https://github.com/Swind/rust_base", rev = "abc1234" }
+rust_task = { git = "https://github.com/Swind/rust_base", tag = "v0.1.0" }
 ```
+
+> The crates are not yet published to [crates.io](https://crates.io); use the
+> git dependencies above. The manifests already carry the `version`, `license`,
+> and `repository` metadata needed for a future `cargo publish` (publish order:
+> `rust_task` → `rust_io` → `rust_net`).
 
 For local development, use `[patch]` in `.cargo/config.toml`:
 

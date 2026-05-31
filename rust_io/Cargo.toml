@@ -1,11 +1,15 @@
 [package]
 name = "rust_io"
-version = "0.1.0"
-edition = "2024"
+description = "epoll-backed event loop and async file I/O for Linux — a Rust port of Chromium's base::MessagePumpForIO / base::FileProxy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 path = "lib.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
-rust_task = { path = "../rust_task" }
+rust_task = { path = "../rust_task", version = "0.1.0" }

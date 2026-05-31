@@ -1,7 +1,11 @@
 [package]
 name = "rust_task"
-version = "0.1.0"
-edition = "2024"
+description = "Thread pool, task runners, sequencing, and shutdown lifecycle — a Rust port of Chromium's base::TaskRunner / base::ThreadPool."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 path = "lib.rs"
