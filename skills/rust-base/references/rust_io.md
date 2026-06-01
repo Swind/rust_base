@@ -8,6 +8,8 @@ Public exports:
 
 ```rust
 pub use rust_io::{IoTaskRunner, FdWatcher, FdWatchController, WatchMode, FileProxy};
+// platform event-loop abstraction (see "MessagePump layering" below):
+pub use rust_io::{MessagePumpForIo, MessagePumpDelegate, EpollMessagePump};
 ```
 
 ## The one rule that governs everything here
@@ -153,11 +155,33 @@ cargo run --example io_task_runner   # one-shot watch, persistent watch, Weak li
 cargo run --example file_proxy       # write→read chaining, appends, concurrent reads
 ```
 
+## MessagePump layering
+
+`IoTaskRunner` is split into two layers, mirroring Chromium's
+`SingleThreadTaskRunner` + `MessagePumpForIO`:
+
+- **`IoTaskRunner`** (task layer, platform-agnostic): the task/delayed-task
+  queues, `SequenceToken`, `TaskMonitor` wiring, and the `TaskRunner` /
+  `SequencedTaskRunner` trait impls. It implements `MessagePumpDelegate` and owns
+  an `Arc<dyn MessagePumpForIo>`.
+- **`MessagePumpForIo`** (platform event loop): blocks on fd readiness,
+  dispatches to `FdWatcher`s, and calls back into the delegate's `do_work()` to
+  run ready tasks. The Linux backend is **`EpollMessagePump`** (owns the
+  `epoll`/`eventfd` fds). `IoTaskRunner::new()` wires one up automatically.
+
+You almost never touch these directly — `IoTaskRunner`'s public API is
+unchanged. The seam exists so a non-Linux backend (kqueue, IOCP) could be added
+without changing the task layer. To inject a custom backend, use
+`IoTaskRunner::with_pump(pump)`.
+
 ## Chromium correspondence
 
 | rust_io | Chromium |
 |---------|----------|
-| `IoTaskRunner` | `MessagePumpForIO` / `CurrentIOThread` |
+| `IoTaskRunner` | `SingleThreadTaskRunner` / `CurrentIOThread` |
+| `MessagePumpForIo` (trait) | `MessagePumpForIO` |
+| `MessagePumpDelegate` (trait) | `MessagePump::Delegate` |
+| `EpollMessagePump` | `MessagePumpEpoll` |
 | `FdWatcher` / `FdWatchController` / `WatchMode` | `MessagePumpForIO::FdWatcher` / `FdWatchController` / `Mode` |
 | internal `eventfd` wake | `MessagePumpEpoll::wake_event_` |
 | `FileProxy` | `base::FileProxy` |

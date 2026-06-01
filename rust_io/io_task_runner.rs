@@ -1,101 +1,27 @@
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, VecDeque};
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rust_task::sequence_token::SequenceToken;
 use rust_task::sequenced_task_runner::{CurrentDefaultHandle, SequencedTaskRunner};
-use rust_task::task_monitor::TaskMonitor;
+use rust_task::task_monitor::{TaskMonitor, WorkerSlot};
 use rust_task::task_runner::TaskRunner;
 use rust_task::thread_pool::worker_thread::ScopedSequenceToken;
 
-// ── Public types
-// ──────────────────────────────────────────────────────────────
-
-/// Which I/O direction(s) to watch on a file descriptor.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum WatchMode {
-    Read,
-    Write,
-    ReadWrite,
-}
-
-/// Callback trait for FD readiness notifications.
-///
-/// Implement this on your connection/socket struct.  The methods are called on
-/// the `IoTaskRunner`'s IO thread when the fd becomes readable or writable.
-///
-/// Mirrors `MessagePumpForIO::FdWatcher` in Chromium.
-pub trait FdWatcher: Send + Sync + 'static {
-    /// Called when `fd` can be read without blocking.
-    fn on_file_can_read_without_blocking(&self, fd: RawFd);
-    /// Called when `fd` can be written without blocking.
-    fn on_file_can_write_without_blocking(&self, fd: RawFd);
-}
-
-// ── FdWatchController
-// ─────────────────────────────────────────────────────────
-
-/// RAII handle for a single FD watch registration.
-///
-/// Create one per watched operation (one for read, one for write) as a member
-/// variable of the struct that implements `FdWatcher`, then pass a `&mut`
-/// reference to `IoTaskRunner::watch_file_descriptor`.  The watch is
-/// automatically cancelled when this controller is dropped.
-///
-/// Mirrors `MessagePumpForIO::FdWatchController` in Chromium.
-pub struct FdWatchController {
-    runner: Option<Weak<IoTaskRunner>>,
-    fd: RawFd,
-    generation: u64,
-}
-
-impl FdWatchController {
-    pub fn new() -> Self {
-        Self { runner: None, fd: -1, generation: 0 }
-    }
-
-    /// Cancel the watch explicitly. Returns `true` if a watch was active.
-    pub fn stop_watching_file_descriptor(&mut self) -> bool {
-        let Some(weak) = self.runner.take() else { return false };
-        let Some(runner) = weak.upgrade() else { return false };
-        runner.unregister_fd(self.fd, self.generation)
-    }
-
-    /// Returns `true` if this controller currently holds an active watch.
-    pub fn is_watching(&self) -> bool {
-        self.runner.is_some()
-    }
-}
-
-impl Default for FdWatchController {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for FdWatchController {
-    fn drop(&mut self) {
-        self.stop_watching_file_descriptor();
-    }
-}
+use crate::epoll_pump::EpollMessagePump;
+use crate::message_pump::{
+    FdWatchController, FdWatcher, MessagePumpDelegate, MessagePumpForIo, WatchMode,
+};
 
 // ── IoTaskRunner
 // ──────────────────────────────────────────────────────────────
 
 thread_local! {
-    static CURRENT_IO_RUNNER: std::cell::RefCell<Option<Weak<IoTaskRunner>>> =
+    static CURRENT_IO_RUNNER: std::cell::RefCell<Option<std::sync::Weak<IoTaskRunner>>> =
         const { std::cell::RefCell::new(None) };
-}
-
-// Internal per-registration state.
-struct WatchEntry {
-    watcher: Weak<dyn FdWatcher + Send + Sync>,
-    persistent: bool,
-    mode: WatchMode,
-    generation: u64,
 }
 
 struct DelayedTask {
@@ -121,11 +47,14 @@ impl Ord for DelayedTask {
     }
 }
 
-/// A `SequencedTaskRunner` backed by a dedicated IO thread and an epoll loop.
+/// A `SequencedTaskRunner` backed by a dedicated IO thread and a
+/// [`MessagePumpForIo`].
 ///
 /// Combines task posting (`post_task`, `post_delayed_task`) with non-blocking
 /// FD readiness monitoring (`watch_file_descriptor`), matching Chromium's
-/// `SingleThreadTaskRunner` + `MessagePumpForIO` design.
+/// `SingleThreadTaskRunner` + `MessagePumpForIO` design.  The task-runner
+/// concerns live here; the platform event loop is delegated to the pump
+/// (`EpollMessagePump` on Linux), so this type carries no epoll specifics.
 ///
 /// # Usage pattern (Chromium `SocketPosix` style)
 ///
@@ -160,22 +89,23 @@ impl Ord for DelayedTask {
 /// }
 /// ```
 pub struct IoTaskRunner {
-    epoll_fd: RawFd,
-    wake_fd: RawFd, // eventfd: written by post_task to interrupt epoll_wait
+    pump: Arc<dyn MessagePumpForIo>,
     tasks: Mutex<VecDeque<Box<dyn FnOnce() + Send>>>,
     delayed_tasks: Mutex<BinaryHeap<DelayedTask>>,
-    watches: Mutex<HashMap<RawFd, WatchEntry>>,
-    generation_counter: AtomicU64,
     shutdown: AtomicBool,
     token: SequenceToken,
     thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
     monitor: Option<Arc<TaskMonitor>>,
+    // The IO thread's monitor slot, set on the IO thread when the loop starts.
+    // Used to bracket both task execution (in do_work) and FD callbacks.
+    monitor_slot: Mutex<Option<WorkerSlot>>,
 }
 
 impl IoTaskRunner {
-    /// Create a new `IoTaskRunner` and immediately start its IO thread.
+    /// Create a new `IoTaskRunner` (backed by an epoll pump) and immediately
+    /// start its IO thread.
     pub fn new() -> Arc<Self> {
-        Self::new_impl(None)
+        Self::with_pump_impl(EpollMessagePump::new(), None)
     }
 
     /// Create a new `IoTaskRunner` with task monitoring enabled.
@@ -185,35 +115,45 @@ impl IoTaskRunner {
     /// hang detection; IO callbacks (`on_file_can_*`) are also bracketed by
     /// `WorkerSlot::task_started/finished`.
     pub fn new_with_monitor(monitor: Arc<TaskMonitor>) -> Arc<Self> {
-        Self::new_impl(Some(monitor))
+        Self::with_pump_impl(EpollMessagePump::new(), Some(monitor))
     }
 
-    fn new_impl(monitor: Option<Arc<TaskMonitor>>) -> Arc<Self> {
-        let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-        assert!(epoll_fd >= 0, "epoll_create1 failed");
+    /// Create a new `IoTaskRunner` driven by a custom [`MessagePumpForIo`]
+    /// backend, and start its IO thread.
+    pub fn with_pump(pump: Arc<dyn MessagePumpForIo>) -> Arc<Self> {
+        Self::with_pump_impl(pump, None)
+    }
 
-        let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        assert!(wake_fd >= 0, "eventfd failed");
-
-        let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: wake_fd as u64 };
-        let rc = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, wake_fd, &mut ev) };
-        assert_eq!(rc, 0, "epoll_ctl(ADD wake_fd) failed");
-
+    fn with_pump_impl(
+        pump: Arc<dyn MessagePumpForIo>,
+        monitor: Option<Arc<TaskMonitor>>,
+    ) -> Arc<Self> {
         let runner = Arc::new(Self {
-            epoll_fd,
-            wake_fd,
+            pump,
             tasks: Mutex::new(VecDeque::new()),
             delayed_tasks: Mutex::new(BinaryHeap::new()),
-            watches: Mutex::new(HashMap::new()),
-            generation_counter: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             token: SequenceToken::create(),
             thread_handle: Mutex::new(None),
             monitor,
+            monitor_slot: Mutex::new(None),
         });
 
-        let cloned = Arc::clone(&runner);
-        let handle = thread::spawn(move || run_loop(cloned));
+        let runner_for_thread = Arc::clone(&runner);
+        let handle = thread::spawn(move || {
+            // Task-layer thread setup: establish this thread's sequence identity
+            // and "current IO runner" before handing control to the pump loop.
+            let _token_guard = ScopedSequenceToken::new(runner_for_thread.token);
+            let _default_handle = CurrentDefaultHandle::new(
+                Arc::clone(&runner_for_thread) as Arc<dyn SequencedTaskRunner>
+            );
+            CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = Some(Arc::downgrade(&runner_for_thread)));
+
+            let pump = Arc::clone(&runner_for_thread.pump);
+            pump.run(Arc::clone(&runner_for_thread) as Arc<dyn MessagePumpDelegate>);
+
+            CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = None);
+        });
         *runner.thread_handle.lock().unwrap() = Some(handle);
         runner
     }
@@ -234,7 +174,7 @@ impl IoTaskRunner {
     ///   `controller.stop_watching_file_descriptor()` is called.
     ///
     /// Any previous watch on `controller` is cancelled before the new one is
-    ///  registered.  Returns `true` on success.
+    /// registered.  Returns `true` on success.
     ///
     /// Mirrors `MessagePumpForIO::WatchFileDescriptor` in Chromium.
     pub fn watch_file_descriptor(
@@ -247,72 +187,94 @@ impl IoTaskRunner {
     ) -> bool {
         controller.stop_watching_file_descriptor();
 
-        let generation = self.generation_counter.fetch_add(1, Ordering::Relaxed);
-        let epoll_events = mode_to_epoll_events(mode);
-        let mut ev = libc::epoll_event { events: epoll_events, u64: fd as u64 };
-
-        let rc = unsafe { libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev) };
-        if rc < 0 {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            if errno == libc::EEXIST {
-                let rc2 =
-                    unsafe { libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut ev) };
-                if rc2 < 0 {
-                    return false;
-                }
-            } else {
-                return false;
+        match self.pump.register_fd(fd, persistent, mode, Arc::downgrade(&watcher)) {
+            Some(generation) => {
+                let weak_pump: std::sync::Weak<dyn MessagePumpForIo> = Arc::downgrade(&self.pump);
+                controller.attach(weak_pump, fd, generation);
+                true
             }
+            None => false,
         }
-
-        self.watches.lock().unwrap().insert(
-            fd,
-            WatchEntry { watcher: Arc::downgrade(&watcher), persistent, mode, generation },
-        );
-
-        controller.fd = fd;
-        controller.generation = generation;
-        controller.runner = Some(Arc::downgrade(self));
-        true
     }
 
     /// Shut down the IO thread.  Pending tasks are abandoned.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
-        self.wake();
+        self.pump.quit();
         if let Some(handle) = self.thread_handle.lock().unwrap().take() {
             let _ = handle.join();
-        }
-    }
-
-    // ── Private ───────────────────────────────────────────────────────────────
-
-    fn wake(&self) {
-        let val: u64 = 1;
-        unsafe {
-            libc::write(self.wake_fd, &raw const val as *const libc::c_void, 8);
-        }
-    }
-
-    fn unregister_fd(&self, fd: RawFd, generation: u64) -> bool {
-        let mut watches = self.watches.lock().unwrap();
-        match watches.get(&fd) {
-            Some(e) if e.generation == generation => {
-                watches.remove(&fd);
-                let mut dummy = libc::epoll_event { events: 0, u64: 0 };
-                unsafe { libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_DEL, fd, &mut dummy) };
-                true
-            }
-            _ => false,
         }
     }
 }
 
 impl Drop for IoTaskRunner {
     fn drop(&mut self) {
-        unsafe {
-            libc::close(self.epoll_fd);
-            libc::close(self.wake_fd);
+        // Ensure the IO thread is stopped and joined even if `shutdown` was not
+        // called explicitly, so the pump (and its fds) are released cleanly.
+        if let Some(handle) = self.thread_handle.lock().unwrap().take() {
+            self.pump.quit();
+            let _ = handle.join();
+        }
+    }
+}
+
+impl MessagePumpDelegate for IoTaskRunner {
+    fn do_work(&self) -> Option<Instant> {
+        let slot = self.monitor_slot.lock().unwrap();
+
+        // Drain immediate tasks.
+        loop {
+            let task = self.tasks.lock().unwrap().pop_front();
+            let Some(task) = task else { break };
+            if let Some(ref s) = *slot {
+                s.task_started();
+            }
+            task();
+            if let Some(ref s) = *slot {
+                s.task_finished();
+            }
+        }
+
+        // Run delayed tasks whose deadline has passed.
+        loop {
+            let task = {
+                let now = Instant::now();
+                let mut q = self.delayed_tasks.lock().unwrap();
+                if q.peek().is_some_and(|t| t.deadline <= now) { q.pop() } else { None }
+            };
+            let Some(t) = task else { break };
+            if let Some(ref s) = *slot {
+                s.task_started();
+            }
+            (t.callback)();
+            if let Some(ref s) = *slot {
+                s.task_finished();
+            }
+        }
+
+        // Report the next delayed deadline so the pump can size its wait.
+        self.delayed_tasks.lock().unwrap().peek().map(|t| t.deadline)
+    }
+
+    fn on_run_start(&self) {
+        if let Some(m) = self.monitor.as_ref() {
+            *self.monitor_slot.lock().unwrap() = Some(m.register_worker());
+        }
+    }
+
+    fn on_run_end(&self) {
+        *self.monitor_slot.lock().unwrap() = None;
+    }
+
+    fn begin_work_item(&self) {
+        if let Some(ref s) = *self.monitor_slot.lock().unwrap() {
+            s.task_started();
+        }
+    }
+
+    fn end_work_item(&self) {
+        if let Some(ref s) = *self.monitor_slot.lock().unwrap() {
+            s.task_finished();
         }
     }
 }
@@ -327,7 +289,7 @@ impl TaskRunner for IoTaskRunner {
             None => callback,
         };
         self.tasks.lock().unwrap().push_back(callback);
-        self.wake();
+        self.pump.schedule_work();
         true
     }
 
@@ -345,7 +307,7 @@ impl TaskRunner for IoTaskRunner {
         };
         let deadline = Instant::now() + delay;
         self.delayed_tasks.lock().unwrap().push(DelayedTask { deadline, callback });
-        self.wake();
+        self.pump.schedule_work();
         true
     }
 
@@ -376,149 +338,6 @@ impl SequencedTaskRunner for IoTaskRunner {
     fn sequence_token(&self) -> SequenceToken {
         self.token
     }
-}
-
-// ── Helpers
-// ───────────────────────────────────────────────────────────────────
-
-fn mode_to_epoll_events(mode: WatchMode) -> u32 {
-    match mode {
-        WatchMode::Read => libc::EPOLLIN as u32,
-        WatchMode::Write => libc::EPOLLOUT as u32,
-        WatchMode::ReadWrite => (libc::EPOLLIN | libc::EPOLLOUT) as u32,
-    }
-}
-
-// ── IO event loop
-// ─────────────────────────────────────────────────────────────
-
-fn run_loop(runner: Arc<IoTaskRunner>) {
-    let _token_guard = ScopedSequenceToken::new(runner.token);
-    let _default_handle =
-        CurrentDefaultHandle::new(Arc::clone(&runner) as Arc<dyn SequencedTaskRunner>);
-    CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = Some(Arc::downgrade(&runner)));
-
-    let slot = runner.monitor.as_ref().map(|m| m.register_worker());
-
-    loop {
-        // Drain immediate tasks.
-        loop {
-            let task = runner.tasks.lock().unwrap().pop_front();
-            let Some(task) = task else { break };
-            if let Some(ref s) = slot {
-                s.task_started();
-            }
-            task();
-            if let Some(ref s) = slot {
-                s.task_finished();
-            }
-        }
-
-        // Run delayed tasks whose deadline has passed.
-        loop {
-            let task = {
-                let now = Instant::now();
-                let mut q = runner.delayed_tasks.lock().unwrap();
-                if q.peek().is_some_and(|t| t.deadline <= now) { q.pop() } else { None }
-            };
-            let Some(t) = task else { break };
-            if let Some(ref s) = slot {
-                s.task_started();
-            }
-            (t.callback)();
-            if let Some(ref s) = slot {
-                s.task_finished();
-            }
-        }
-
-        if runner.shutdown.load(Ordering::Acquire) {
-            break;
-        }
-
-        // Calculate epoll_wait timeout from the next delayed task's deadline.
-        let timeout_ms: i32 = {
-            let q = runner.delayed_tasks.lock().unwrap();
-            match q.peek() {
-                None => -1,
-                Some(next) => {
-                    let now = Instant::now();
-                    if next.deadline <= now {
-                        0
-                    } else {
-                        let ms = (next.deadline - now).as_millis();
-                        ms.min(i32::MAX as u128) as i32
-                    }
-                }
-            }
-        };
-
-        let mut events = [libc::epoll_event { events: 0, u64: 0 }; 64];
-        let n = unsafe { libc::epoll_wait(runner.epoll_fd, events.as_mut_ptr(), 64, timeout_ms) };
-
-        if n < 0 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            break;
-        }
-
-        for ev in &events[..n as usize] {
-            let fd = ev.u64 as RawFd;
-            let ev_flags = ev.events;
-
-            if fd == runner.wake_fd {
-                let mut buf = [0u8; 8];
-                unsafe {
-                    libc::read(runner.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
-                };
-                continue;
-            }
-
-            // Hold the lock only long enough to extract the watcher and decide
-            // whether to remove the entry.  Release before calling callbacks so
-            // the callback can call watch_file_descriptor without deadlocking.
-            let (watcher_opt, can_read, can_write) = {
-                let mut watches = runner.watches.lock().unwrap();
-                let Some(entry) = watches.get(&fd) else { continue };
-                let can_read = (ev_flags & libc::EPOLLIN as u32) != 0
-                    && matches!(entry.mode, WatchMode::Read | WatchMode::ReadWrite);
-                let can_write = (ev_flags & libc::EPOLLOUT as u32) != 0
-                    && matches!(entry.mode, WatchMode::Write | WatchMode::ReadWrite);
-                let watcher = entry.watcher.upgrade();
-                if !entry.persistent {
-                    watches.remove(&fd);
-                    let mut dummy = libc::epoll_event { events: 0, u64: 0 };
-                    unsafe {
-                        libc::epoll_ctl(runner.epoll_fd, libc::EPOLL_CTL_DEL, fd, &mut dummy)
-                    };
-                }
-                (watcher, can_read, can_write)
-            };
-
-            if let Some(w) = watcher_opt {
-                if can_read {
-                    if let Some(ref s) = slot {
-                        s.task_started();
-                    }
-                    w.on_file_can_read_without_blocking(fd);
-                    if let Some(ref s) = slot {
-                        s.task_finished();
-                    }
-                }
-                if can_write {
-                    if let Some(ref s) = slot {
-                        s.task_started();
-                    }
-                    w.on_file_can_write_without_blocking(fd);
-                    if let Some(ref s) = slot {
-                        s.task_finished();
-                    }
-                }
-            }
-        }
-    }
-
-    CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = None);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
