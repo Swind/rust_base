@@ -22,9 +22,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 rust_io = { path = "../rust_io", version = "0.1.0" }
+# Used by socket timeouts (post_delayed_task via the TaskRunner trait).
+rust_task = { path = "../rust_task", version = "0.1.0" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-rust_task = { path = "../rust_task" }
 # For the tls feature's example / test:
 webpki-roots = "0.26"
 rcgen = "0.13"

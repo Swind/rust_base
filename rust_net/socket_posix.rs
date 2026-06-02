@@ -1,10 +1,12 @@
 use std::io;
 use std::net::SocketAddr;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rust_io::{FdWatchController, FdWatcher, IoTaskRunner, WatchMode};
+use rust_task::TaskRunner;
 
 const INVALID_FD: i32 = -1;
 
@@ -70,6 +72,14 @@ pub struct SocketPosix {
     pending_write: Mutex<Option<WriteOp>>,
     pending_connect: Mutex<Option<ConnectCb>>,
     pending_accept: Mutex<Option<AcceptCb>>,
+    // Generation counters, bumped on every connect/read/write so a stale
+    // timeout task (scheduled for an operation that has since completed and had
+    // its slot re-used by a new operation) can recognise it is obsolete and
+    // no-op instead of timing out the wrong callback.  Only touched on the IO
+    // thread; atomics are for `Sync`, not cross-thread coordination.
+    connect_gen: AtomicU64,
+    read_gen: AtomicU64,
+    write_gen: AtomicU64,
 }
 
 impl SocketPosix {
@@ -83,6 +93,9 @@ impl SocketPosix {
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
             pending_accept: Mutex::new(None),
+            connect_gen: AtomicU64::new(0),
+            read_gen: AtomicU64::new(0),
+            write_gen: AtomicU64::new(0),
         })
     }
 
@@ -98,6 +111,9 @@ impl SocketPosix {
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
             pending_accept: Mutex::new(None),
+            connect_gen: AtomicU64::new(0),
+            read_gen: AtomicU64::new(0),
+            write_gen: AtomicU64::new(0),
         })
     }
 
@@ -124,6 +140,7 @@ impl SocketPosix {
     ) {
         let fd = self.fd.load(Ordering::Relaxed);
         assert!(fd >= 0, "socket not open");
+        self.connect_gen.fetch_add(1, Ordering::SeqCst);
 
         match syscall_connect(fd, &addr) {
             Ok(()) => cb(Ok(())),
@@ -133,6 +150,27 @@ impl SocketPosix {
             }
             Err(e) => cb(Err(e)),
         }
+    }
+
+    /// Async connect with a deadline.  Identical to [`connect`](Self::connect)
+    /// except that if the connect has not completed within `timeout`, the
+    /// callback fires with [`io::ErrorKind::TimedOut`] and the pending watch is
+    /// cancelled.  Must be called from the IO thread.
+    pub fn connect_with_timeout(
+        self: &Arc<Self>,
+        addr: SocketAddr,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        // Capture the generation this connect will claim *before* calling it:
+        // `connect` bumps `connect_gen` by one, and on synchronous completion it
+        // may invoke `cb`, which can start a nested operation that bumps the
+        // generation again — so reading it afterwards would capture the wrong
+        // value.  All of this runs on the single IO thread, so `load() + 1`
+        // deterministically equals the value `connect`'s `fetch_add` produces.
+        let my_gen = self.connect_gen.load(Ordering::SeqCst) + 1;
+        self.connect(addr, cb);
+        self.schedule_timeout(timeout, move |s| s.fire_connect_timeout(my_gen));
     }
 
     /// Notify `cb` when the fd is readable without blocking.
@@ -145,8 +183,23 @@ impl SocketPosix {
     /// Must be called from the IO thread.
     pub fn read_if_ready(self: &Arc<Self>, cb: impl FnOnce(io::Result<()>) + Send + 'static) {
         assert!(self.fd.load(Ordering::Relaxed) >= 0, "socket not open");
+        self.read_gen.fetch_add(1, Ordering::SeqCst);
         *self.pending_read.lock().unwrap() = Some(ReadOp::ReadIfReady(Box::new(cb)));
         self.arm_read();
+    }
+
+    /// [`read_if_ready`](Self::read_if_ready) with a deadline: if the fd has
+    /// not become readable within `timeout`, the callback fires with
+    /// [`io::ErrorKind::TimedOut`] and the watch is cancelled.  Must be called
+    /// from the IO thread.
+    pub fn read_if_ready_with_timeout(
+        self: &Arc<Self>,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        let my_gen = self.read_gen.load(Ordering::SeqCst) + 1;
+        self.read_if_ready(cb);
+        self.schedule_timeout(timeout, move |s| s.fire_read_timeout(my_gen));
     }
 
     /// Read up to `len` bytes.  Callback receives the data.
@@ -162,6 +215,7 @@ impl SocketPosix {
     ) {
         let fd = self.fd.load(Ordering::Relaxed);
         assert!(fd >= 0, "socket not open");
+        self.read_gen.fetch_add(1, Ordering::SeqCst);
 
         let mut buf = vec![0u8; len];
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, len) };
@@ -180,6 +234,21 @@ impl SocketPosix {
         self.arm_read();
     }
 
+    /// [`read`](Self::read) with a deadline: if no data arrives within
+    /// `timeout`, the callback fires with [`io::ErrorKind::TimedOut`] and the
+    /// watch is cancelled.  A read that completes synchronously is unaffected.
+    /// Must be called from the IO thread.
+    pub fn read_with_timeout(
+        self: &Arc<Self>,
+        len: usize,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<Vec<u8>>) + Send + 'static,
+    ) {
+        let my_gen = self.read_gen.load(Ordering::SeqCst) + 1;
+        self.read(len, cb);
+        self.schedule_timeout(timeout, move |s| s.fire_read_timeout(my_gen));
+    }
+
     /// Write `buf`.  Callback receives bytes written (may be partial).
     ///
     /// Tries an immediate `write(2)` first; only registers a watch on EAGAIN.
@@ -194,6 +263,7 @@ impl SocketPosix {
     ) {
         let fd = self.fd.load(Ordering::Relaxed);
         assert!(fd >= 0, "socket not open");
+        self.write_gen.fetch_add(1, Ordering::SeqCst);
 
         let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if n >= 0 {
@@ -208,6 +278,22 @@ impl SocketPosix {
         // EAGAIN: register watch, store callback
         *self.pending_write.lock().unwrap() = Some(WriteOp { buf, cb: Box::new(cb) });
         self.arm_write();
+    }
+
+    /// [`write`](Self::write) with a deadline: if the socket does not become
+    /// writable within `timeout`, the callback fires with
+    /// [`io::ErrorKind::TimedOut`] and the watch is cancelled.  A write that
+    /// completes synchronously is unaffected.  Must be called from the IO
+    /// thread.
+    pub fn write_with_timeout(
+        self: &Arc<Self>,
+        buf: Vec<u8>,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<usize>) + Send + 'static,
+    ) {
+        let my_gen = self.write_gen.load(Ordering::SeqCst) + 1;
+        self.write(buf, cb);
+        self.schedule_timeout(timeout, move |s| s.fire_write_timeout(my_gen));
     }
 
     /// Bind the socket to `addr`.
@@ -318,6 +404,68 @@ impl SocketPosix {
             Arc::clone(self) as Arc<dyn FdWatcher + Send + Sync>,
         );
     }
+
+    /// Post a delayed task on the IO runner that runs `on_fire` once `timeout`
+    /// elapses.  Bound to a `Weak`, so it silently no-ops if the socket has
+    /// been dropped; the per-operation generation check inside each
+    /// `fire_*` handler guards against the socket still being alive but
+    /// running a *newer* operation in the same slot.
+    fn schedule_timeout(
+        self: &Arc<Self>,
+        timeout: Duration,
+        on_fire: impl FnOnce(Arc<Self>) + Send + 'static,
+    ) {
+        let weak = Arc::downgrade(self);
+        let io = IoTaskRunner::current().expect("must be called from the IO thread");
+        io.post_delayed_task(
+            Box::new(move || {
+                if let Some(s) = weak.upgrade() {
+                    on_fire(s);
+                }
+            }),
+            timeout,
+        );
+    }
+
+    fn fire_connect_timeout(&self, my_gen: u64) {
+        // A newer connect bumped the generation: this timeout is obsolete.
+        if self.connect_gen.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+        // `take()` is the once-guard: if the connect already completed, the slot
+        // is empty and there is nothing to time out.
+        let cb = self.pending_connect.lock().unwrap().take();
+        if let Some(cb) = cb {
+            self.write_watcher.lock().unwrap().stop_watching_file_descriptor();
+            cb(Err(io::Error::from(io::ErrorKind::TimedOut)));
+        }
+    }
+
+    fn fire_read_timeout(&self, my_gen: u64) {
+        if self.read_gen.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+        let op = self.pending_read.lock().unwrap().take();
+        if let Some(op) = op {
+            self.read_watcher.lock().unwrap().stop_watching_file_descriptor();
+            let err = io::Error::from(io::ErrorKind::TimedOut);
+            match op {
+                ReadOp::ReadIfReady(cb) => cb(Err(err)),
+                ReadOp::Read { cb, .. } => cb(Err(err)),
+            }
+        }
+    }
+
+    fn fire_write_timeout(&self, my_gen: u64) {
+        if self.write_gen.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+        let op = self.pending_write.lock().unwrap().take();
+        if let Some(WriteOp { cb, .. }) = op {
+            self.write_watcher.lock().unwrap().stop_watching_file_descriptor();
+            cb(Err(io::Error::from(io::ErrorKind::TimedOut)));
+        }
+    }
 }
 
 impl Default for SocketPosix {
@@ -330,6 +478,9 @@ impl Default for SocketPosix {
             pending_write: Mutex::new(None),
             pending_connect: Mutex::new(None),
             pending_accept: Mutex::new(None),
+            connect_gen: AtomicU64::new(0),
+            read_gen: AtomicU64::new(0),
+            write_gen: AtomicU64::new(0),
         }
     }
 }
@@ -947,6 +1098,225 @@ mod tests {
 
         io.shutdown();
         assert_eq!(*received.lock().unwrap(), b"ping");
+        close_fd(fd1);
+    }
+
+    // ── timeouts ───────────────────────────────────────────────────────────────
+
+    /// A read that never receives data fires the callback with `TimedOut`.
+    #[test]
+    fn read_times_out_when_no_data() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let err_kind = Arc::new(Mutex::new(None));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let e = Arc::clone(&err_kind);
+        io.post_task(Box::new(move || {
+            s.read_with_timeout(64, Duration::from_millis(30), move |result| {
+                *e.lock().unwrap() = Some(result.unwrap_err().kind());
+                b.wait();
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert_eq!(*err_kind.lock().unwrap(), Some(io::ErrorKind::TimedOut));
+        close_fd(fd1);
+    }
+
+    /// Data arriving before the deadline delivers normally; the timeout then
+    /// fires late but must not clobber a *subsequent* read on the same socket.
+    #[test]
+    fn read_timeout_does_not_fire_when_data_arrives() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let results: Arc<Mutex<Vec<io::Result<Vec<u8>>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let r = Arc::clone(&results);
+        io.post_task(Box::new(move || {
+            let s2 = Arc::clone(&s);
+            let r2 = Arc::clone(&r);
+            // First read: short timeout, but data is already waiting → succeeds.
+            s.read_with_timeout(64, Duration::from_millis(30), move |first| {
+                r2.lock().unwrap().push(first);
+                // Second read with a long timeout. The first read's 30ms timeout
+                // task is still queued; the generation guard must stop it from
+                // timing out this read once 30ms elapse.
+                s2.read_with_timeout(64, Duration::from_secs(10), move |second| {
+                    r2.lock().unwrap().push(second);
+                    b.wait();
+                });
+            });
+        }));
+
+        write_raw(fd1, b"one");
+        // Wait past the first read's deadline, then satisfy the second read.
+        std::thread::sleep(Duration::from_millis(80));
+        write_raw(fd1, b"two");
+        barrier.wait();
+
+        io.shutdown();
+        let got = results.lock().unwrap();
+        assert_eq!(got[0].as_ref().unwrap(), b"one");
+        assert_eq!(got[1].as_ref().unwrap(), b"two", "second read must not be timed out");
+        close_fd(fd1);
+    }
+
+    /// A connect to an unreachable peer that stays in-flight times out.
+    ///
+    /// `192.0.2.1` is in TEST-NET-1 (RFC 5737), reserved and unroutable, so the
+    /// handshake never completes — `connect(2)` returns `EINPROGRESS` and the
+    /// deadline is what resolves the callback.
+    #[test]
+    fn connect_times_out() {
+        use std::net::SocketAddr;
+
+        let dead: SocketAddr = "192.0.2.1:80".parse().unwrap();
+
+        let io = IoTaskRunner::new();
+        let socket = SocketPosix::new();
+        let barrier = Arc::new(Barrier::new(2));
+        let err_kind = Arc::new(Mutex::new(None));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let e = Arc::clone(&err_kind);
+        io.post_task(Box::new(move || {
+            s.open(&dead).unwrap();
+            s.connect_with_timeout(dead, Duration::from_millis(50), move |result| {
+                *e.lock().unwrap() = Some(result.unwrap_err().kind());
+                b.wait();
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert_eq!(*err_kind.lock().unwrap(), Some(io::ErrorKind::TimedOut));
+    }
+
+    /// A `read_if_ready` that is never signalled fires the callback with
+    /// `TimedOut` (exercises the readiness-notify path of `fire_read_timeout`).
+    #[test]
+    fn read_if_ready_times_out_when_no_data() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let err_kind = Arc::new(Mutex::new(None));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let e = Arc::clone(&err_kind);
+        io.post_task(Box::new(move || {
+            s.read_if_ready_with_timeout(Duration::from_millis(30), move |result| {
+                *e.lock().unwrap() = Some(result.unwrap_err().kind());
+                b.wait();
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert_eq!(*err_kind.lock().unwrap(), Some(io::ErrorKind::TimedOut));
+        close_fd(fd1);
+    }
+
+    /// A write that cannot make progress times out.
+    ///
+    /// The send buffer is filled first (raw non-blocking writes until `EAGAIN`)
+    /// and the peer never reads, so the socket stays unwritable and the
+    /// deadline is what resolves the callback — exercising
+    /// `fire_write_timeout`.
+    #[test]
+    fn write_times_out_when_not_writable() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+
+        // Fill fd0's send buffer so subsequent writes block with EAGAIN.
+        let chunk = [0u8; 65536];
+        loop {
+            let n = unsafe { libc::write(fd0, chunk.as_ptr() as *const libc::c_void, chunk.len()) };
+            if n < 0 {
+                break; // EAGAIN: buffer full
+            }
+        }
+
+        let socket = SocketPosix::from_fd(fd0);
+        let barrier = Arc::new(Barrier::new(2));
+        let err_kind = Arc::new(Mutex::new(None));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let e = Arc::clone(&err_kind);
+        io.post_task(Box::new(move || {
+            // Peer (fd1) never reads, so this write stays pending until the
+            // deadline.
+            s.write_with_timeout(b"blocked".to_vec(), Duration::from_millis(30), move |result| {
+                *e.lock().unwrap() = Some(result.unwrap_err().kind());
+                b.wait();
+            });
+        }));
+
+        barrier.wait();
+        io.shutdown();
+        assert_eq!(*err_kind.lock().unwrap(), Some(io::ErrorKind::TimedOut));
+        close_fd(fd1);
+    }
+
+    /// An operation that completes before its deadline must leave the
+    /// still-queued timeout task a harmless no-op — the callback fires
+    /// exactly once, with the real result, never a spurious `TimedOut`.
+    ///
+    /// Unlike `read_timeout_does_not_fire_when_data_arrives` (which starts a
+    /// second read, so the *generation* guard is what saves it), here no
+    /// further operation runs: the generation still matches when the late
+    /// timer fires, so this exercises the other guard — `take()` finding
+    /// the slot already empty.
+    #[test]
+    fn read_completes_then_late_timeout_is_harmless() {
+        let io = IoTaskRunner::new();
+        let (fd0, fd1) = socket_pair();
+        let socket = SocketPosix::from_fd(fd0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let results: Arc<Mutex<Vec<io::Result<Vec<u8>>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let s = Arc::clone(&socket);
+        let b = Arc::clone(&barrier);
+        let r = Arc::clone(&results);
+        io.post_task(Box::new(move || {
+            // No data yet, so this takes the async path: it stores a pending read
+            // and arms a watch.  The 40ms timeout will fire *after* the read has
+            // already completed below.
+            s.read_with_timeout(64, Duration::from_millis(40), move |result| {
+                r.lock().unwrap().push(result);
+                b.wait();
+            });
+        }));
+
+        // Satisfy the read well before its deadline.
+        std::thread::sleep(Duration::from_millis(10));
+        write_raw(fd1, b"early");
+        barrier.wait(); // read has now completed and cleared the pending slot
+
+        // Wait past the deadline so the obsolete timeout task fires on the IO
+        // thread; it must find the slot empty and do nothing.
+        std::thread::sleep(Duration::from_millis(80));
+
+        io.shutdown();
+        let got = results.lock().unwrap();
+        assert_eq!(got.len(), 1, "callback must fire exactly once, not again on timeout");
+        assert_eq!(got[0].as_ref().unwrap(), b"early");
         close_fd(fd1);
     }
 }

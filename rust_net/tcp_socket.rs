@@ -2,6 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::socket_posix::SocketPosix;
 
@@ -89,16 +90,51 @@ impl TcpSocket {
         self.socket.connect(addr, cb);
     }
 
+    pub fn connect_with_timeout(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        self.socket.connect_with_timeout(addr, timeout, cb);
+    }
+
     pub fn read(&self, len: usize, cb: impl FnOnce(io::Result<Vec<u8>>) + Send + 'static) {
         self.socket.read(len, cb);
+    }
+
+    pub fn read_with_timeout(
+        &self,
+        len: usize,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<Vec<u8>>) + Send + 'static,
+    ) {
+        self.socket.read_with_timeout(len, timeout, cb);
     }
 
     pub fn read_if_ready(&self, cb: impl FnOnce(io::Result<()>) + Send + 'static) {
         self.socket.read_if_ready(cb);
     }
 
+    pub fn read_if_ready_with_timeout(
+        &self,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        self.socket.read_if_ready_with_timeout(timeout, cb);
+    }
+
     pub fn write(&self, buf: Vec<u8>, cb: impl FnOnce(io::Result<usize>) + Send + 'static) {
         self.socket.write(buf, cb);
+    }
+
+    pub fn write_with_timeout(
+        &self,
+        buf: Vec<u8>,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<usize>) + Send + 'static,
+    ) {
+        self.socket.write_with_timeout(buf, timeout, cb);
     }
 
     /// Accept one incoming connection, delivering a new `TcpSocket` for the

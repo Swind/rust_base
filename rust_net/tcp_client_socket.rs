@@ -1,5 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::stream_socket::{ReadCallback, StreamSocket, WriteCallback};
 use crate::tcp_socket::TcpSocket;
@@ -44,16 +45,59 @@ impl TcpClientSocket {
         self.socket.connect(addr, cb);
     }
 
+    /// [`connect`](Self::connect) with a deadline.  If the handshake does not
+    /// complete within `timeout`, the callback fires with
+    /// [`io::ErrorKind::TimedOut`].  Must be called from the IO thread.
+    pub fn connect_with_timeout(
+        &self,
+        addr: SocketAddr,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        if let Err(e) = self.socket.open(&addr) {
+            cb(Err(e));
+            return;
+        }
+        let _ = self.socket.set_default_options_for_client();
+        self.socket.connect_with_timeout(addr, timeout, cb);
+    }
+
     pub fn read(&self, len: usize, cb: impl FnOnce(io::Result<Vec<u8>>) + Send + 'static) {
         self.socket.read(len, cb);
+    }
+
+    pub fn read_with_timeout(
+        &self,
+        len: usize,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<Vec<u8>>) + Send + 'static,
+    ) {
+        self.socket.read_with_timeout(len, timeout, cb);
     }
 
     pub fn read_if_ready(&self, cb: impl FnOnce(io::Result<()>) + Send + 'static) {
         self.socket.read_if_ready(cb);
     }
 
+    pub fn read_if_ready_with_timeout(
+        &self,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) {
+        self.socket.read_if_ready_with_timeout(timeout, cb);
+    }
+
     pub fn write(&self, buf: Vec<u8>, cb: impl FnOnce(io::Result<usize>) + Send + 'static) {
         self.socket.write(buf, cb);
+    }
+
+    pub fn write_with_timeout(
+        &self,
+        buf: Vec<u8>,
+        timeout: Duration,
+        cb: impl FnOnce(io::Result<usize>) + Send + 'static,
+    ) {
+        self.socket.write_with_timeout(buf, timeout, cb);
     }
 
     /// The local address of the connection (`getsockname(2)`).
