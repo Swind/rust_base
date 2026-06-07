@@ -19,7 +19,7 @@ use std::time::Duration;
 use rust_task::{TaskRunner, TaskTraits, ThreadPool};
 
 use crate::executor::{JoinHandle, spawn};
-use crate::reactor::reactor;
+use crate::reactor::io_runner;
 
 // ── yield_now ───────────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ impl Future for Timer {
         if !this.scheduled {
             this.scheduled = true;
             let state = this.state.clone();
-            reactor().io.post_delayed_task(
+            io_runner().post_delayed_task(
                 Box::new(move || {
                     let waker = {
                         let mut s = state.lock().unwrap();

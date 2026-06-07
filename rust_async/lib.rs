@@ -51,6 +51,7 @@ mod reactor;
 pub mod current_thread;
 pub mod fs;
 pub mod net;
+pub mod runtime;
 pub mod stream;
 pub mod sync;
 
@@ -90,6 +91,7 @@ pub use block_on::block_on;
 pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
 pub use net::{Async, TcpListener, UdpSocket};
+pub use runtime::Runtime;
 pub use task_impl::{
     Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,
     yield_now,

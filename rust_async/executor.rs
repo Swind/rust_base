@@ -30,6 +30,12 @@ impl<T> JoinHandle<T> {
     pub(crate) fn from_task(task: async_task::Task<T>) -> Self {
         JoinHandle(Some(task))
     }
+
+    /// Detach the task: it keeps running to completion independently of this
+    /// handle (the same effect as dropping the handle, but explicit).
+    pub fn detach(self) {
+        // `Drop` calls `task.detach()`.
+    }
 }
 
 impl<T> Future for JoinHandle<T> {

@@ -16,7 +16,7 @@ use std::task::{Context, Poll, Waker};
 use rust_io::FileProxy;
 use rust_task::{TaskRunner, ThreadPool};
 
-use crate::reactor::reactor;
+use crate::reactor::io_runner;
 
 static FS_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
@@ -97,7 +97,7 @@ impl File {
     {
         let proxy = self.proxy.clone();
         let (setter, fut) = oneshot::<io::Result<T>>();
-        reactor().io.post_task(Box::new(move || {
+        io_runner().post_task(Box::new(move || {
             op(&proxy, Box::new(move |res| setter.set(res)));
         }));
         fut.await

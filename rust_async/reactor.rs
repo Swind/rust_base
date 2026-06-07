@@ -42,6 +42,19 @@ pub(crate) fn reactor() -> &'static Reactor {
     REACTOR.get_or_init(|| Reactor { io: IoTaskRunner::new() })
 }
 
+/// The `IoTaskRunner` a future should register I/O / timers with: **the lane it
+/// is currently running on**, if that lane is an `IoTaskRunner` (the
+/// [`crate::current_thread`] and [`crate::runtime`] executors), otherwise the
+/// global [`reactor`] singleton (used by `block_on` and the pool executor,
+/// whose tasks run on non-IO threads).
+///
+/// This is what makes a thread-per-core [`crate::runtime::Runtime`] work: each
+/// lane arms its own epoll, so an fd is watched and woken on the same thread
+/// the task runs on — no cross-lane hand-off.
+pub(crate) fn io_runner() -> Arc<IoTaskRunner> {
+    IoTaskRunner::current().unwrap_or_else(|| reactor().io.clone())
+}
+
 struct SourceState {
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
@@ -125,7 +138,7 @@ impl Source {
     /// so we hop there via `post_task` — exactly the "get onto the IO
     /// thread first" rule from `rust_io`.
     fn arm(self: Arc<Self>, mode: WatchMode) {
-        let io = reactor().io.clone();
+        let io = io_runner();
         let io_inner = io.clone();
         let controller = self.controller.clone();
         let fd = self.fd;

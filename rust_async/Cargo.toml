@@ -29,3 +29,7 @@ path = "examples/async_tcp_echo.rs"
 [[example]]
 name = "http_server"
 path = "examples/http_server.rs"
+
+[[example]]
+name = "http_server_multicore"
+path = "examples/http_server_multicore.rs"
