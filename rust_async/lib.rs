@@ -35,6 +35,7 @@ pub mod fs;
 mod local;
 mod net;
 mod reactor;
+pub mod sync;
 mod task;
 
 pub use block_on::block_on;
