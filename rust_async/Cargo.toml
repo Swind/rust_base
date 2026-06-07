@@ -20,7 +20,12 @@ libc = { workspace = true }
 
 [dev-dependencies]
 futures-lite = "2"
+httparse = "1"
 
 [[example]]
 name = "async_tcp_echo"
 path = "examples/async_tcp_echo.rs"
+
+[[example]]
+name = "http_server"
+path = "examples/http_server.rs"
