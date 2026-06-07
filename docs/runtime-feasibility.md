@@ -165,7 +165,7 @@ async-std 本身是「async 版標準庫 facade」，其能力可拆成以下幾
 | 3 | `task`（補完） | `sleep`/`timeout`、`spawn_blocking`、`yield_now`、task-local（`task_local!`）、`JoinHandle` detach-on-drop | ✅ |
 | 4 | `fs` | `File`（read/write/append/positional）、`fs::{read,write}` —— 包 `rust_io::FileProxy` | ✅ |
 | 5 | `sync` | `Mutex`/`RwLock`/`Barrier`/`channel`（async 版） | ✅ |
-| 6 | `stream` | `Stream` trait + combinators | ⬜ |
+| 6 | `stream` | `Stream` trait + combinators | ✅ |
 | 7 | `prelude` + docs | 對齊 async-std 的 re-export 與文件 | ⬜ |
 
 設計原則維持不變：**每一階段都只站在 `rust_task` / `rust_io` 的公開 API 上**，不修改既有
