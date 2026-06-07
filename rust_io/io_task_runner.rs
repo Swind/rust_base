@@ -149,33 +149,7 @@ impl IoTaskRunner {
         })
     }
 
-    /// Create an `IoTaskRunner` **without** spawning an IO thread; you drive
-    /// its loop yourself on the calling thread via
-    /// [`run_on_current_thread`].
-    ///
-    /// This is the "make the current thread the message loop" mode — Chromium's
-    /// pattern of running a `MessageLoop`/`RunLoop` on an existing thread (e.g.
-    /// the main thread) rather than a dedicated one.
-    ///
-    /// [`run_on_current_thread`]: Self::run_on_current_thread
-    pub fn without_thread() -> Arc<Self> {
-        Self::build(EpollMessagePump::new(), None)
-    }
-
-    /// Drive this runner's pump loop **on the calling thread**, returning when
-    /// [`shutdown`](Self::shutdown) (or the pump's `quit`) is called —
-    /// typically from a task running on this very loop.
-    ///
-    /// Establishes the calling thread's sequence identity and "current IO
-    /// runner" for the duration, so [`IoTaskRunner::current`] works and fds are
-    /// watched here. Intended for runners from
-    /// [`without_thread`](Self::without_thread).
-    pub fn run_on_current_thread(self: &Arc<Self>) {
-        self.drive();
-    }
-
-    /// Thread setup + pump loop. Shared by the spawned-thread path and
-    /// [`run_on_current_thread`](Self::run_on_current_thread).
+    /// Thread setup + pump loop, run on the spawned IO thread.
     fn drive(self: &Arc<Self>) {
         // Task-layer thread setup: establish this thread's sequence identity
         // and "current IO runner" before handing control to the pump loop.
