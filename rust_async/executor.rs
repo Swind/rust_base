@@ -57,7 +57,10 @@ impl<T> Drop for JoinHandle<T> {
 
 static POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
-fn pool() -> &'static Arc<ThreadPool> {
+/// The shared executor thread pool. Both the parallel [`spawn`] and the
+/// sequenced executor ([`crate::sequenced`]) run their tasks on this pool's
+/// workers; the difference is only *how* wakeups are scheduled onto it.
+pub(crate) fn pool() -> &'static Arc<ThreadPool> {
     POOL.get_or_init(|| ThreadPool::new(4))
 }
 

@@ -52,6 +52,7 @@ pub mod current_thread;
 pub mod fs;
 pub mod net;
 pub mod runtime;
+pub mod sequenced;
 pub mod stream;
 pub mod sync;
 
@@ -92,6 +93,7 @@ pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
 pub use net::{Async, TcpListener, UdpSocket};
 pub use runtime::Runtime;
+pub use sequenced::Sequence;
 pub use task_impl::{
     Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,
     yield_now,
