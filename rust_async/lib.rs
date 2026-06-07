@@ -31,6 +31,7 @@
 
 mod block_on;
 mod executor;
+pub mod fs;
 mod local;
 mod net;
 mod reactor;
