@@ -24,6 +24,14 @@ use crate::local::tag;
 /// which cancels on drop.
 pub struct JoinHandle<T>(Option<async_task::Task<T>>);
 
+impl<T> JoinHandle<T> {
+    /// Wrap an `async_task::Task` (used by the alternative schedulers, e.g.
+    /// [`crate::current_thread`]).
+    pub(crate) fn from_task(task: async_task::Task<T>) -> Self {
+        JoinHandle(Some(task))
+    }
+}
+
 impl<T> Future for JoinHandle<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {

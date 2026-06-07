@@ -150,7 +150,7 @@ impl<F: Future> Future for Timeout<F> {
     }
 }
 
-// ── spawn_blocking ──────────────────────────────────────────────────────────
+// ── offload / spawn_blocking ────────────────────────────────────────────────
 
 static BLOCKING_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
@@ -158,29 +158,58 @@ fn blocking_pool() -> &'static Arc<ThreadPool> {
     BLOCKING_POOL.get_or_init(|| ThreadPool::new(4))
 }
 
-/// Run a blocking closure off the executor, on a dedicated thread pool.
+/// Offload a closure onto a **separate parallel pool**, awaitable from any
+/// lane.
+///
+/// This is the primitive behind the "send heavy work out, stay on the main
+/// runner" pattern. It is *not* a thread-per-call: the closure is posted to a
+/// dedicated parallel [`ThreadPool`] (so several offloads run concurrently),
+/// and when it finishes the result is delivered through a waker — which
+/// re-schedules the **awaiting** task back onto *its own* lane. So if you
+/// `offload(..).await` from the [`crate::current_thread`] reactor lane, the CPU
+/// work happens on the pool and execution resumes on the reactor lane
+/// automatically; you never manually "post the result back".
+///
+/// This is exactly the Future shape of "`await` == post to another task runner,
+/// resume when it replies": the [`Offload`] future *is* that wiring.
+pub fn offload<F, T>(f: F) -> Offload<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    Offload {
+        job: Some(Box::new(f)),
+        state: Arc::new(Mutex::new(OffloadState { result: None, waker: None })),
+    }
+}
+
+/// Run a blocking/CPU-heavy closure off the executor, on a dedicated parallel
+/// pool, returning a [`JoinHandle`] (mirrors
+/// `async_std::task::spawn_blocking`).
+///
+/// Equivalent to `spawn(offload(f))`. Prefer [`offload`] directly when you want
+/// the work to resume on the *current* lane rather than the spawn pool.
 pub fn spawn_blocking<F, T>(f: F) -> JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    spawn(Blocking {
-        job: Some(Box::new(f)),
-        state: Arc::new(Mutex::new(BlockingState { result: None, waker: None })),
-    })
+    spawn(offload(f))
 }
 
-struct BlockingState<T> {
+struct OffloadState<T> {
     result: Option<T>,
     waker: Option<Waker>,
 }
 
-struct Blocking<T> {
+/// Future returned by [`offload`]; resolves with the closure's return value
+/// once the parallel pool finishes running it.
+pub struct Offload<T> {
     job: Option<Box<dyn FnOnce() -> T + Send>>,
-    state: Arc<Mutex<BlockingState<T>>>,
+    state: Arc<Mutex<OffloadState<T>>>,
 }
 
-impl<T: Send + 'static> Future for Blocking<T> {
+impl<T: Send + 'static> Future for Offload<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         let this = self.get_mut();

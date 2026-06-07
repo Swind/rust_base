@@ -48,6 +48,7 @@ mod executor;
 mod local;
 mod reactor;
 
+pub mod current_thread;
 pub mod fs;
 pub mod net;
 pub mod stream;
@@ -62,7 +63,8 @@ pub mod task {
     pub use crate::executor::{JoinHandle, spawn};
     pub use crate::local::LocalKey;
     pub use crate::task_impl::{
-        Timeout, TimeoutError, Timer, YieldNow, sleep, spawn_blocking, timeout, yield_now,
+        Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,
+        yield_now,
     };
 }
 
@@ -89,5 +91,6 @@ pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
 pub use net::{Async, TcpListener, UdpSocket};
 pub use task_impl::{
-    Timeout, TimeoutError, Timer, YieldNow, sleep, spawn_blocking, timeout, yield_now,
+    Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,
+    yield_now,
 };
