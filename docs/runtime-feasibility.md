@@ -166,8 +166,40 @@ async-std 本身是「async 版標準庫 facade」，其能力可拆成以下幾
 | 4 | `fs` | `File`（read/write/append/positional）、`fs::{read,write}` —— 包 `rust_io::FileProxy` | ✅ |
 | 5 | `sync` | `Mutex`/`RwLock`/`Barrier`/`channel`（async 版） | ✅ |
 | 6 | `stream` | `Stream` trait + combinators | ✅ |
-| 7 | `prelude` + docs | 對齊 async-std 的 re-export 與文件 | ⬜ |
+| 7 | `prelude` + docs | 對齊 async-std 的 re-export 與文件 | ✅ |
 
 設計原則維持不變：**每一階段都只站在 `rust_task` / `rust_io` 的公開 API 上**，不修改既有
 crate。其中階段 3 的 `sleep`/`timeout` 與階段 4 的 `fs` 特別划算 —— `post_delayed_task`
 與 `FileProxy` 本來就是現成的對應物，幾乎是直接包一層 Future 門面。
+
+### 完成度與成果
+
+全部 7 個階段皆已實作完畢，對應檔案：
+
+| 階段 | 檔案 | 對外 API |
+|---|---|---|
+| 0 | `block_on.rs` / `executor.rs` | `block_on`、`spawn`、`JoinHandle` |
+| 1 | `net.rs`（trait impl） | `io::{AsyncRead, AsyncWrite}`（= `futures_io`） |
+| 2 | `net.rs` | `net::{Async, TcpListener, UdpSocket}` |
+| 3 | `task.rs` / `local.rs` | `task::{sleep, timeout, yield_now, spawn_blocking}`、`task_local!` |
+| 4 | `fs.rs` | `fs::{File, read, write}` |
+| 5 | `sync.rs` | `sync::{Mutex, RwLock, Barrier, channel}` |
+| 6 | `stream.rs` | `stream::{Stream, StreamExt, interval, once, repeat, from_iter, empty}` |
+| 7 | `lib.rs` | `task` / `net` / `io` namespace 模組 + `prelude` |
+
+crate 的模組佈局刻意對齊 `async_std`（`task` / `net` / `io` / `fs` / `sync` / `stream` /
+`prelude`），讓熟悉 async-std 的人可以幾乎無痛切換。四個 CI gate（fmt / clippy `-D warnings`
+/ test / build examples）全綠，且 `rust_task` / `rust_io` / `rust_net` 一行未改。
+
+值得強調的關鍵設計取捨：
+
+- **`sync` 釋放時喚醒「全部」等待者**（小型 thundering herd），換取在 cancellation 下顯然正確
+  —— 被喚醒後又被 drop 的 future 不可能把其他人卡死。
+- **`stream` 重用生態系標準的 `futures_core::Stream`**（一如 `io` 層重用 `futures_io`），
+  而非自訂 trait，確保與 `futures` 生態互通；其中 `interval` 是唯一真正 runtime-specific 的
+  建構子（由 reactor 的 delayed-task timer 驅動）。
+
+剩下的都不是可行性問題，而是「再多鋪表面積」：cursor-based `fs::File` 的 `AsyncRead`/
+`AsyncWrite`、`TcpListener::incoming()` 的 `Stream`、bounded channel、多 reactor thread、
+非 Linux backend。樞紐（callback → `Waker`）早在階段 0 就驗證完畢，後續每一階段都只是
+重複套用同一個轉換。
