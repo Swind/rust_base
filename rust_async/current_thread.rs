@@ -34,19 +34,24 @@
 //! ```
 
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::mpsc;
 
 use async_task::Runnable;
+use rust_io::IoTaskRunner;
 use rust_task::TaskRunner;
 
 use crate::executor::JoinHandle;
 use crate::local::tag;
-use crate::reactor::reactor;
+use crate::reactor::io_runner;
 
-/// "Run this task" == "post it onto the reactor's IO thread". This is the whole
-/// difference from the pool-based executor: same machinery, different lane.
+/// "Run this task" == "post it onto the current reactor lane". This is the
+/// whole difference from the pool-based executor: same machinery, different
+/// lane. Resolving via [`io_runner`] means a task re-schedules onto whichever
+/// lane it is running on (the global reactor, or a [`run_here`] /
+/// [`crate::runtime`] lane), keeping a task pinned to one lane.
 fn schedule(runnable: Runnable) {
-    reactor().io.post_task(Box::new(move || {
+    io_runner().post_task(Box::new(move || {
         runnable.run();
     }));
 }
@@ -89,4 +94,46 @@ where
     // through the channel rather than by polling the handle.
     task.detach();
     rx.recv().expect("current_thread::run: root task dropped without completing")
+}
+
+/// Like [`run`], but the **calling thread itself becomes the reactor lane**
+/// instead of parking while a separate IO thread does the work.
+///
+/// This builds a dedicated [`IoTaskRunner::without_thread`] and drives its pump
+/// loop on the caller via [`IoTaskRunner::run_on_current_thread`]. The root,
+/// all tasks spawned with [`spawn`], and the epoll loop all run on this one
+/// thread; when the root completes it quits the loop and the call returns. A
+/// pure `run_here` program uses exactly **one** thread (plus the
+/// [`crate::offload`] pool only if you offload), never touching the global
+/// reactor singleton.
+pub fn run_here<F>(future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let runner = IoTaskRunner::without_thread();
+    let (tx, rx) = mpsc::sync_channel::<F::Output>(1);
+
+    let stop = Arc::clone(&runner);
+    let wrapped = async move {
+        let out = future.await;
+        let _ = tx.send(out);
+        // Break the pump loop so `run_on_current_thread` (below) returns.
+        stop.shutdown();
+    };
+
+    // The root must be posted onto *this* runner explicitly: at this point the
+    // caller is not yet pumping, so `io_runner()` would resolve to the global
+    // reactor. Once we are pumping, nested `spawn`s resolve to this lane.
+    let sched = Arc::clone(&runner);
+    let (runnable, task) = async_task::spawn(tag(wrapped), move |r: Runnable| {
+        sched.post_task(Box::new(move || {
+            r.run();
+        }));
+    });
+    runnable.schedule();
+    task.detach();
+
+    runner.run_on_current_thread();
+    rx.recv().expect("current_thread::run_here: root task dropped without completing")
 }

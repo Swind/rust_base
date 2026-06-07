@@ -65,3 +65,34 @@ fn offload_computes_correctly() {
     let sum = current_thread::run(async { offload(|| (0u64..1_000_000).sum::<u64>()).await });
     assert_eq!(sum, 499_999_500_000);
 }
+
+#[test]
+fn run_here_uses_the_calling_thread() {
+    let caller = thread::current().id();
+    let root = current_thread::run_here(async { thread::current().id() });
+    assert_eq!(caller, root, "run_here should drive the root on the calling thread");
+}
+
+#[test]
+fn run_parks_caller_on_a_separate_lane() {
+    // Contrast with run_here: plain `run` drives the root on the IO thread, not
+    // the caller.
+    let caller = thread::current().id();
+    let root = current_thread::run(async { thread::current().id() });
+    assert_ne!(caller, root, "run should drive the root on a separate IO thread");
+}
+
+#[test]
+fn run_here_drives_spawn_and_timers_on_the_caller() {
+    use std::time::Duration;
+
+    let caller = thread::current().id();
+    let (out, spawned_on) = current_thread::run_here(async move {
+        let h = current_thread::spawn(async { (41, thread::current().id()) });
+        rust_async::sleep(Duration::from_millis(10)).await; // reactor timer on the caller
+        let (val, id) = h.await;
+        (val + 1, id)
+    });
+    assert_eq!(out, 42);
+    assert_eq!(spawned_on, caller, "spawned task should also run on the caller lane");
+}

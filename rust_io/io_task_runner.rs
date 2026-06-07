@@ -128,7 +128,16 @@ impl IoTaskRunner {
         pump: Arc<dyn MessagePumpForIo>,
         monitor: Option<Arc<TaskMonitor>>,
     ) -> Arc<Self> {
-        let runner = Arc::new(Self {
+        let runner = Self::build(pump, monitor);
+        let runner_for_thread = Arc::clone(&runner);
+        let handle = thread::spawn(move || runner_for_thread.drive());
+        *runner.thread_handle.lock().unwrap() = Some(handle);
+        runner
+    }
+
+    /// Build a runner **without** starting an IO thread.
+    fn build(pump: Arc<dyn MessagePumpForIo>, monitor: Option<Arc<TaskMonitor>>) -> Arc<Self> {
+        Arc::new(Self {
             pump,
             tasks: Mutex::new(VecDeque::new()),
             delayed_tasks: Mutex::new(BinaryHeap::new()),
@@ -137,25 +146,48 @@ impl IoTaskRunner {
             thread_handle: Mutex::new(None),
             monitor,
             monitor_slot: Mutex::new(None),
-        });
+        })
+    }
 
-        let runner_for_thread = Arc::clone(&runner);
-        let handle = thread::spawn(move || {
-            // Task-layer thread setup: establish this thread's sequence identity
-            // and "current IO runner" before handing control to the pump loop.
-            let _token_guard = ScopedSequenceToken::new(runner_for_thread.token);
-            let _default_handle = CurrentDefaultHandle::new(
-                Arc::clone(&runner_for_thread) as Arc<dyn SequencedTaskRunner>
-            );
-            CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = Some(Arc::downgrade(&runner_for_thread)));
+    /// Create an `IoTaskRunner` **without** spawning an IO thread; you drive
+    /// its loop yourself on the calling thread via
+    /// [`run_on_current_thread`].
+    ///
+    /// This is the "make the current thread the message loop" mode — Chromium's
+    /// pattern of running a `MessageLoop`/`RunLoop` on an existing thread (e.g.
+    /// the main thread) rather than a dedicated one.
+    ///
+    /// [`run_on_current_thread`]: Self::run_on_current_thread
+    pub fn without_thread() -> Arc<Self> {
+        Self::build(EpollMessagePump::new(), None)
+    }
 
-            let pump = Arc::clone(&runner_for_thread.pump);
-            pump.run(Arc::clone(&runner_for_thread) as Arc<dyn MessagePumpDelegate>);
+    /// Drive this runner's pump loop **on the calling thread**, returning when
+    /// [`shutdown`](Self::shutdown) (or the pump's `quit`) is called —
+    /// typically from a task running on this very loop.
+    ///
+    /// Establishes the calling thread's sequence identity and "current IO
+    /// runner" for the duration, so [`IoTaskRunner::current`] works and fds are
+    /// watched here. Intended for runners from
+    /// [`without_thread`](Self::without_thread).
+    pub fn run_on_current_thread(self: &Arc<Self>) {
+        self.drive();
+    }
 
-            CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = None);
-        });
-        *runner.thread_handle.lock().unwrap() = Some(handle);
-        runner
+    /// Thread setup + pump loop. Shared by the spawned-thread path and
+    /// [`run_on_current_thread`](Self::run_on_current_thread).
+    fn drive(self: &Arc<Self>) {
+        // Task-layer thread setup: establish this thread's sequence identity
+        // and "current IO runner" before handing control to the pump loop.
+        let _token_guard = ScopedSequenceToken::new(self.token);
+        let _default_handle =
+            CurrentDefaultHandle::new(Arc::clone(self) as Arc<dyn SequencedTaskRunner>);
+        CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = Some(Arc::downgrade(self)));
+
+        let pump = Arc::clone(&self.pump);
+        pump.run(Arc::clone(self) as Arc<dyn MessagePumpDelegate>);
+
+        CURRENT_IO_RUNNER.with(|r| *r.borrow_mut() = None);
     }
 
     /// Returns the `IoTaskRunner` bound to the current thread, if any.
