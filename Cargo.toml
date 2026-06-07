@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust_task", "rust_io", "rust_net"]
+members = ["rust_task", "rust_io", "rust_net", "rust_async"]
 resolver = "2"
 
 # Shared metadata inherited by each crate via `<field>.workspace = true`.

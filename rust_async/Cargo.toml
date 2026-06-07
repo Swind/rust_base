@@ -1,0 +1,25 @@
+[package]
+name = "rust_async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Spike: a Future/poll/Waker async runtime layered on rust_task + rust_io"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+rust_task = { path = "../rust_task" }
+rust_io = { path = "../rust_io" }
+async-task = "4"
+futures-io = "0.3"
+libc = { workspace = true }
+
+[dev-dependencies]
+futures-lite = "2"
+
+[[example]]
+name = "async_tcp_echo"
+path = "examples/async_tcp_echo.rs"
