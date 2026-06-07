@@ -1,67 +1,182 @@
-//! Thread-per-core runtime: lanes run in parallel, work is sharded.
+//! The unified [`Runtime`]: one `(task runner, io task runner)` pair covers
+//! every topology. Each helper below builds a different pairing; the tests show
+//! that ordering, parallelism, reactor-arming, and runtime inheritance all
+//! follow from the two arguments alone.
 
-use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use rust_async::runtime::Runtime;
-use rust_async::sleep;
+use rust_async::{Runnable, Runtime, block_on, offload, sleep, spawn};
+use rust_io::IoTaskRunner;
+use rust_task::{TaskRunner, TaskTraits, ThreadPool};
+
+/// One fused lane: a single `IoTaskRunner` is *both* the executor (where tasks
+/// are polled) and the reactor (where their I/O is armed).
+fn fused() -> Runtime {
+    let io = IoTaskRunner::new();
+    let exec = io.clone();
+    Runtime::new(
+        move |r: Runnable| {
+            exec.post_task(Box::new(move || {
+                r.run();
+            }));
+        },
+        io,
+    )
+}
+
+/// A parallel `ThreadPool` executor paired with its own dedicated reactor.
+fn parallel(threads: usize) -> Runtime {
+    let pool = ThreadPool::new(threads);
+    Runtime::new(
+        move |r: Runnable| {
+            pool.post_task(
+                TaskTraits::default(),
+                Box::new(move || {
+                    r.run();
+                }),
+            );
+        },
+        IoTaskRunner::new(),
+    )
+}
+
+/// One ordered `SequencedTaskRunner` on `pool`, paired with its own reactor.
+fn sequenced(pool: &Arc<ThreadPool>) -> Runtime {
+    let seq = pool.create_sequenced_task_runner(TaskTraits::default());
+    Runtime::new(
+        move |r: Runnable| {
+            seq.post_task(Box::new(move || {
+                r.run();
+            }));
+        },
+        IoTaskRunner::new(),
+    )
+}
 
 #[test]
-fn lanes_run_in_parallel() {
-    let rt = Runtime::new(4);
-    let rt2 = Arc::clone(&rt);
+fn fused_runs_on_one_thread_and_inherits() {
+    // Root + two nested spawns all observe the same thread id: the executor and
+    // reactor share one lane, and the nested `spawn`s inherited the runtime
+    // (otherwise they'd land on the global pool, a different thread).
+    let ids: Vec<ThreadId> = block_on(fused().spawn(async {
+        let root = thread::current().id();
+        let a = spawn(async { thread::current().id() }).await;
+        let b = spawn(async { thread::current().id() }).await;
+        vec![root, a, b]
+    }));
+    assert!(ids.iter().all(|id| *id == ids[0]), "expected one lane, got {ids:?}");
+}
 
+#[test]
+fn fused_reactor_timer_fires() {
     let start = Instant::now();
-    rt.run(async move {
-        // One 50ms blocking sleep per lane. If the lanes were not parallel
-        // threads, four of them would serialize to ~200ms.
-        let handles: Vec<_> = (0..4)
-            .map(|i| rt2.spawn_on(i, async move { thread::sleep(Duration::from_millis(50)) }))
-            .collect();
+    block_on(fused().spawn(async {
+        sleep(Duration::from_millis(30)).await;
+    }));
+    assert!(start.elapsed() >= Duration::from_millis(30));
+}
+
+#[test]
+fn parallel_runtime_inherits_and_overlaps() {
+    // Nested spawns inherit the 4-thread parallel runtime, so four 50ms blocking
+    // sleeps overlap instead of serializing to ~200ms.
+    let start = Instant::now();
+    block_on(parallel(4).spawn(async {
+        let handles: Vec<_> =
+            (0..4).map(|_| spawn(async { thread::sleep(Duration::from_millis(50)) })).collect();
         for h in handles {
             h.await;
         }
-    });
-    let elapsed = start.elapsed();
-
+    }));
     assert!(
-        elapsed < Duration::from_millis(150),
-        "4 lanes x 50ms ran in {elapsed:?}; parallel should be ~50ms, serial ~200ms"
+        start.elapsed() < Duration::from_millis(150),
+        "4 x 50ms took {:?}; parallel should overlap",
+        start.elapsed()
     );
 }
 
 #[test]
-fn round_robin_spreads_across_distinct_lanes() {
-    let rt = Runtime::new(3);
-    let rt2 = Arc::clone(&rt);
+fn sequenced_runtime_is_serial_and_ordered() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+    let a2 = Arc::clone(&active);
+    let m2 = Arc::clone(&max_seen);
 
-    let ids: Vec<ThreadId> = rt.run(async move {
-        let handles: Vec<_> = (0..3).map(|_| rt2.spawn(async { thread::current().id() })).collect();
-        let mut v = Vec::new();
-        for h in handles {
-            v.push(h.await);
+    let pool = ThreadPool::new(4);
+    let rt = sequenced(&pool);
+
+    let order: Vec<usize> = block_on(rt.spawn(async move {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let active = Arc::clone(&a2);
+            let max_seen = Arc::clone(&m2);
+            let log = Arc::clone(&log);
+            // Inherits the sequence: all eight run on the same ordered lane.
+            handles.push(spawn(async move {
+                let now = active.fetch_add(1, SeqCst) + 1;
+                max_seen.fetch_max(now, SeqCst);
+                thread::sleep(Duration::from_millis(3));
+                active.fetch_sub(1, SeqCst);
+                log.lock().unwrap().push(i);
+            }));
         }
-        v
-    });
+        for h in handles {
+            h.await;
+        }
+        Arc::try_unwrap(log).unwrap().into_inner().unwrap()
+    }));
 
-    let uniq: HashSet<ThreadId> = ids.iter().copied().collect();
-    assert_eq!(uniq.len(), 3, "expected 3 distinct lanes, got {ids:?}");
+    assert_eq!(max_seen.load(SeqCst), 1, "tasks on one sequence overlapped");
+    assert_eq!(order, (0..8).collect::<Vec<_>>(), "sequence did not run FIFO");
 }
 
 #[test]
-fn each_lane_has_its_own_reactor_timer() {
-    // sleep() must work on a non-zero lane too — proof that the reactor (epoll +
-    // timer) is per-lane, not the global singleton.
-    let rt = Runtime::new(2);
-    let rt2 = Arc::clone(&rt);
+fn distinct_sequences_run_in_parallel() {
+    let pool = ThreadPool::new(4);
+    let a = sequenced(&pool);
+    let b = sequenced(&pool);
+
     let start = Instant::now();
-    rt.run(async move {
-        rt2.spawn_on(1, async {
-            sleep(Duration::from_millis(30)).await;
-        })
-        .await;
+    let ha = a.spawn(async { thread::sleep(Duration::from_millis(50)) });
+    let hb = b.spawn(async { thread::sleep(Duration::from_millis(50)) });
+    block_on(async {
+        ha.await;
+        hb.await;
     });
+
+    assert!(
+        start.elapsed() < Duration::from_millis(150),
+        "two sequences x 50ms took {:?}; distinct sequences should overlap",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn offload_resumes_on_the_runtime_lane() {
+    let (before, work, after): (ThreadId, ThreadId, ThreadId) = block_on(fused().spawn(async {
+        let before = thread::current().id();
+        let work = offload(|| thread::current().id()).await;
+        let after = thread::current().id();
+        (before, work, after)
+    }));
+
+    assert_ne!(before, work, "offload should run off the runtime lane");
+    assert_eq!(before, after, "execution should resume on the runtime lane");
+}
+
+#[test]
+fn parallel_runtime_pairs_with_its_dedicated_reactor() {
+    // The task runs on a pool worker (not an IO thread); its `sleep` is armed on
+    // the runtime's dedicated reactor and still fires — the forward half of the
+    // pairing working across a thread boundary.
+    let start = Instant::now();
+    block_on(parallel(2).spawn(async {
+        sleep(Duration::from_millis(30)).await;
+    }));
     assert!(start.elapsed() >= Duration::from_millis(30));
 }

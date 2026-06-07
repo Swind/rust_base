@@ -1,21 +1,16 @@
-//! `spawn`: schedule a future onto a `rust_task::ThreadPool`.
+//! `spawn`: schedule a future onto the current (or global) [`Runtime`].
 //!
-//! This is the whole "executor" of the spike, and it is tiny — because
-//! [`async_task`] already provides the `Runnable`/`Task` machinery, and
-//! `rust_task` already provides the thread pool. The only glue is the
-//! **schedule function**: "re-run this task" is literally "post a closure to
-//! the pool". That is the exact same substitution async-global-executor makes;
-//! here the queue happens to be a `rust_task` `TaskRunner`.
+//! [`JoinHandle`] and the global [`pool`] live here; the actual scheduling is
+//! [`Runtime::spawn`](crate::Runtime::spawn). The free [`spawn`] just forwards
+//! to whichever runtime the calling task is bound to (inheriting it), or the
+//! global one outside any task.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
-use async_task::Runnable;
-use rust_task::{TaskTraits, ThreadPool};
-
-use crate::local::tag;
+use rust_task::ThreadPool;
 
 /// Handle to a spawned task; awaiting it yields the task's output.
 ///
@@ -57,31 +52,18 @@ impl<T> Drop for JoinHandle<T> {
 
 static POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
-/// The shared executor thread pool. Both the parallel [`spawn`] and the
-/// sequenced executor ([`crate::sequenced`]) run their tasks on this pool's
-/// workers; the difference is only *how* wakeups are scheduled onto it.
+/// The global default executor thread pool, backing the [`global`
+/// runtime`](crate::runtime::global).
 pub(crate) fn pool() -> &'static Arc<ThreadPool> {
     POOL.get_or_init(|| ThreadPool::new(4))
 }
 
-/// Spawn `future` onto the global thread pool.
+/// Spawn `future` onto the runtime the calling task is bound to (inheriting
+/// it), or the global runtime if called outside any task.
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let schedule = move |runnable: Runnable| {
-        // Waker fired -> put the task back on the pool. A `Runnable` *is* a
-        // `Box<dyn FnOnce>` in spirit, so the pool never knows it's a future.
-        pool().post_task(
-            TaskTraits::default(),
-            Box::new(move || {
-                runnable.run();
-            }),
-        );
-    };
-    // Wrap so the task carries its own task-local storage.
-    let (runnable, task) = async_task::spawn(tag(future), schedule);
-    runnable.schedule();
-    JoinHandle(Some(task))
+    crate::runtime::current_or_global().spawn(future)
 }

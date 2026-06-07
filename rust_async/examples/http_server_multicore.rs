@@ -1,9 +1,10 @@
-//! The HTTP server, sharded across N single-thread lanes (thread-per-core).
+//! The HTTP server, sharded across N fused lanes (thread-per-core).
 //!
-//! Identical to `http_server`, except the executor is a [`Runtime`] with one
-//! lane per core instead of a single `current_thread` lane. The accept loop
-//! runs on lane 0 and round-robins each connection onto a lane; from then on
-//! that connection's socket is watched and served entirely on its own lane (no
+//! Identical to `http_server`, except instead of one fused [`Runtime`] there
+//! are `N` of them — one per core, each its own `IoTaskRunner` used as both
+//! executor and reactor. The accept loop runs on lane 0 and round-robins each
+//! connection onto a lane by spawning it on that lane's `Runtime`; from then on
+//! the connection's socket is watched and served entirely on its own lane (no
 //! cross-lane hand-off), so the lanes scale across cores while each stays
 //! ordered and lock-free internally.
 //!
@@ -15,33 +16,53 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::runtime::Runtime;
+use rust_async::{Runnable, Runtime, block_on};
+use rust_io::IoTaskRunner;
+use rust_task::TaskRunner;
+
+/// One fused lane: an `IoTaskRunner` used as both executor and reactor.
+fn lane() -> Runtime {
+    let io = IoTaskRunner::new();
+    let exec = io.clone();
+    Runtime::new(
+        move |r: Runnable| {
+            exec.post_task(Box::new(move || {
+                r.run();
+            }));
+        },
+        io,
+    )
+}
 
 fn main() -> io::Result<()> {
-    let lanes = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let listener = TcpListener::bind(addr)?;
-    println!("listening on http://{addr} across {lanes} lanes");
+    println!("listening on http://{addr} across {n} lanes");
 
-    let rt = Runtime::new(lanes);
-    let rt2 = Arc::clone(&rt);
-    rt.run(async move {
+    let lanes: Arc<Vec<Runtime>> = Arc::new((0..n).map(|_| lane()).collect());
+    let next = Arc::new(AtomicUsize::new(0));
+
+    // The accept loop itself runs on lane 0.
+    let lanes2 = Arc::clone(&lanes);
+    block_on(lanes[0].spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, _peer)) => {
-                    // Round-robin the connection onto a lane.
-                    rt2.spawn(async move {
+                    // Round-robin the connection onto a lane's runtime.
+                    let lane = next.fetch_add(1, Ordering::Relaxed) % lanes2.len();
+                    lanes2[lane].spawn(async move {
                         let _ = handle(stream).await;
                     });
                 }
                 Err(e) => eprintln!("accept error: {e}"),
             }
         }
-    });
-    Ok(())
+    }))
 }
 
 async fn handle(mut stream: Async) -> io::Result<()> {

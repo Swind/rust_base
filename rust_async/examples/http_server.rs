@@ -1,10 +1,11 @@
-//! A minimal HTTP/1.1 server on the **single-lane** `current_thread` executor.
+//! A minimal HTTP/1.1 server on a **single fused lane**.
 //!
-//! Everything — the accept loop, every connection, the reactor's epoll, and the
-//! response writing — runs on **one** thread (`reactor().io`). Concurrency
-//! comes from `async`/`.await`, not from threads: when a connection blocks on a
+//! The runtime is one `IoTaskRunner` used as *both* the executor and the
+//! reactor, so everything — the accept loop, every connection, the reactor's
+//! epoll, and the response writing — runs on **one** thread. Concurrency comes
+//! from `async`/`.await`, not from threads: when a connection blocks on a
 //! socket read, the lane moves on to another ready connection. The only other
-//! threads in the process are the parallel pool that [`offload`] uses for heavy
+//! threads in the process are the parallel pool that `offload` uses for heavy
 //! work.
 //!
 //! Run it:
@@ -13,26 +14,37 @@
 //! curl http://127.0.0.1:8080/
 //! curl http://127.0.0.1:8080/compute     # exercises offload (CPU work off-lane)
 //! ```
-//!
-//! Hammer it to see "many connections, few threads" hold:
-//! ```text
-//! while running, the whole thing stays on one I/O thread + the offload pool
-//! ```
 
 use std::io;
 use std::net::SocketAddr;
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{current_thread, offload};
+use rust_async::{Runnable, Runtime, block_on, offload, spawn};
+use rust_io::IoTaskRunner;
+use rust_task::TaskRunner;
 
 fn main() -> io::Result<()> {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let listener = TcpListener::bind(addr)?;
     println!("listening on http://{addr}  (try / and /compute)");
 
-    // `run` drives the whole server on the reactor lane.
-    current_thread::run(async move {
+    // One fused lane: the same IoTaskRunner is the executor and the reactor.
+    let io = IoTaskRunner::new();
+    let exec = io.clone();
+    let rt = Runtime::new(
+        move |r: Runnable| {
+            exec.post_task(Box::new(move || {
+                r.run();
+            }));
+        },
+        io,
+    );
+
+    // `block_on` waits on the calling thread; the server runs on the lane. Each
+    // connection task is spawned with the free `spawn`, inheriting `rt`, so it
+    // stays on the same single lane.
+    block_on(rt.spawn(async move {
         loop {
             let (stream, peer) = match listener.accept().await {
                 Ok(pair) => pair,
@@ -41,14 +53,13 @@ fn main() -> io::Result<()> {
                     continue;
                 }
             };
-            // One task per connection, all multiplexed on the single lane.
-            current_thread::spawn(async move {
+            spawn(async move {
                 if let Err(e) = handle(stream).await {
                     eprintln!("connection {peer} error: {e}");
                 }
             });
         }
-    })
+    }))
 }
 
 /// Read one request, route it, write one response, half-close.

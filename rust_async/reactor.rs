@@ -42,17 +42,18 @@ pub(crate) fn reactor() -> &'static Reactor {
     REACTOR.get_or_init(|| Reactor { io: IoTaskRunner::new() })
 }
 
-/// The `IoTaskRunner` a future should register I/O / timers with: **the lane it
-/// is currently running on**, if that lane is an `IoTaskRunner` (the
-/// [`crate::current_thread`] and [`crate::runtime`] executors), otherwise the
-/// global [`reactor`] singleton (used by `block_on` and the pool executor,
-/// whose tasks run on non-IO threads).
+/// The `IoTaskRunner` a future should register I/O / timers with: **the reactor
+/// of the [`Runtime`](crate::Runtime) the current task is bound to**, or the
+/// global [`reactor`] singleton if we are outside any task.
 ///
-/// This is what makes a thread-per-core [`crate::runtime::Runtime`] work: each
-/// lane arms its own epoll, so an fd is watched and woken on the same thread
-/// the task runs on — no cross-lane hand-off.
+/// This is the forward half of the runtime pairing: a task carries its runtime
+/// (via [`crate::local`]), so `await`ing I/O arms the reactor that runtime was
+/// configured with — regardless of which thread the task happens to be polled
+/// on. That decoupling is what lets a parallel-pool executor share, or not
+/// share, a reactor with others, and what makes thread-per-core fall out (each
+/// lane's runtime points its reactor at itself).
 pub(crate) fn io_runner() -> Arc<IoTaskRunner> {
-    IoTaskRunner::current().unwrap_or_else(|| reactor().io.clone())
+    crate::runtime::current_or_global().reactor()
 }
 
 struct SourceState {
@@ -63,6 +64,11 @@ struct SourceState {
     write_ready: bool,
     /// Current one-shot interest registered in epoll, if any.
     armed: Option<WatchMode>,
+    /// The reactor this fd is bound to, latched on the first arm. Reused for
+    /// every later (re-)arm — crucially the re-arm issued from the IO-thread
+    /// callback, where no task context is installed and `io_runner()` would
+    /// otherwise fall back to the global reactor.
+    reactor: Option<Arc<IoTaskRunner>>,
 }
 
 /// Per-fd reactor state. Implements [`FdWatcher`]; the epoll loop holds only a
@@ -88,6 +94,7 @@ impl Source {
                 read_ready: false,
                 write_ready: false,
                 armed: None,
+                reactor: None,
             }),
             controller: Arc::new(Mutex::new(FdWatchController::new())),
         })
@@ -126,19 +133,22 @@ impl Source {
         };
         if desired != s.armed {
             s.armed = desired;
-            if let Some(mode) = desired
-                && let Some(me) = self.me.upgrade()
-            {
-                me.arm(mode);
+            if let Some(mode) = desired {
+                // Bind to the current task's reactor on the first arm; reuse it
+                // for every subsequent (re-)arm, including from the IO-thread
+                // callback where no task context is installed.
+                let io = s.reactor.get_or_insert_with(io_runner).clone();
+                if let Some(me) = self.me.upgrade() {
+                    me.arm(io, mode);
+                }
             }
         }
     }
 
-    /// Register a one-shot epoll watch for `mode`. Must run on the IO thread,
-    /// so we hop there via `post_task` — exactly the "get onto the IO
+    /// Register a one-shot epoll watch for `mode` on `io`. Must run on the IO
+    /// thread, so we hop there via `post_task` — exactly the "get onto the IO
     /// thread first" rule from `rust_io`.
-    fn arm(self: Arc<Self>, mode: WatchMode) {
-        let io = io_runner();
+    fn arm(self: Arc<Self>, io: Arc<IoTaskRunner>, mode: WatchMode) {
         let io_inner = io.clone();
         let controller = self.controller.clone();
         let fd = self.fd;

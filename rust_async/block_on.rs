@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
-use crate::local::tag;
+use crate::local::tag_with;
+use crate::runtime::current_or_global;
 
 struct ThreadWaker {
     thread: Thread,
@@ -32,8 +33,9 @@ impl Wake for ThreadWaker {
 
 /// Run `future` to completion, blocking the current thread until it resolves.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    // Wrap so the root future has its own task-local storage too.
-    let mut future = pin!(tag(future));
+    // Bind the root to the current runtime (or the global one at top level), so
+    // its task-locals exist and nested spawns / awaited I/O resolve a runtime.
+    let mut future = pin!(tag_with(future, current_or_global()));
     let tw = Arc::new(ThreadWaker { thread: thread::current(), awoken: AtomicBool::new(false) });
     let waker = Waker::from(tw.clone());
     let mut cx = Context::from_waker(&waker);

@@ -11,13 +11,22 @@
 //!
 //! | Runtime concept            | Provided by                                   |
 //! |----------------------------|-----------------------------------------------|
-//! | Runnable queue / re-schedule | [`async_task`] + `rust_task::TaskRunner::post_task` |
+//! | Runnable queue / re-schedule | [`async_task`] + a [`Runtime`]'s schedule fn |
 //! | Reactor (epoll → `Waker`)  | `rust_io::IoTaskRunner` + an `FdWatcher` that wakes |
 //! | `block_on`                 | thread-parking waker on the calling thread    |
-//! | `spawn`                    | `async_task::spawn` scheduled onto a `ThreadPool` |
+//! | `spawn`                    | `async_task::spawn` scheduled onto a [`Runtime`] |
 //!
 //! See [`net::Async`] for the load-bearing piece: turning epoll readiness
 //! callbacks into `Waker` wake-ups.
+//!
+//! ## The runtime is one configurable thing
+//!
+//! A [`Runtime`] pairs a **task runner** (where woken futures are polled) with
+//! an **io task runner** (where `await`ed I/O is armed and woken). Every
+//! topology — one fused lane, a parallel pool, an ordered sequence, or
+//! thread-per-core — is a choice of those two arguments, not a separate module.
+//! A task carries its runtime, so nested [`spawn`]s inherit it and `await`ed
+//! I/O arms its reactor no matter which thread polls the task. See [`Runtime`].
 //!
 //! ## Module map (mirrors `async_std`)
 //!
@@ -35,8 +44,6 @@
 //! ## Known limitations
 //!
 //! - Linux only (inherits `rust_io`).
-//! - A single reactor thread (the `rust_io` epoll loop). Fine for a faithful
-//!   Chromium-style model; a general-purpose runtime might want several.
 //! - Combinators on [`net::Async`] come from the `futures` ecosystem (it
 //!   implements `futures_io`'s traits); we do not re-implement them.
 //!
@@ -48,11 +55,9 @@ mod executor;
 mod local;
 mod reactor;
 
-pub mod current_thread;
 pub mod fs;
 pub mod net;
 pub mod runtime;
-pub mod sequenced;
 pub mod stream;
 pub mod sync;
 
@@ -88,12 +93,12 @@ pub mod prelude {
 }
 
 // Convenience re-exports at the crate root (the most-reached-for items).
+pub use async_task::Runnable;
 pub use block_on::block_on;
 pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
 pub use net::{Async, TcpListener, UdpSocket};
 pub use runtime::Runtime;
-pub use sequenced::Sequence;
 pub use task_impl::{
     Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,
     yield_now,

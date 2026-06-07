@@ -21,6 +21,10 @@ libc = { workspace = true }
 [dev-dependencies]
 futures-lite = "2"
 httparse = "1"
+# Also listed above as normal deps; repeated here so integration tests and
+# examples can assemble a `Runtime` from the concrete runners by name.
+rust_task = { path = "../rust_task" }
+rust_io = { path = "../rust_io" }
 
 [[example]]
 name = "async_tcp_echo"

@@ -1,5 +1,5 @@
-//! End-to-end test of an HTTP server on the single-lane `current_thread`
-//! executor: many concurrent connections, one I/O thread.
+//! End-to-end test of an HTTP server on a single fused lane: many concurrent
+//! connections, one I/O thread.
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{current_thread, sleep};
+use rust_async::{Runnable, Runtime, block_on, sleep, spawn};
+use rust_io::IoTaskRunner;
+use rust_task::TaskRunner;
 
 const N_CLIENTS: usize = 64;
 const HANDLER_DELAY: Duration = Duration::from_millis(20);
@@ -44,16 +46,26 @@ fn single_lane_serves_many_concurrent_connections() {
     let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
 
-    // The entire server runs on one reactor lane.
+    // The entire server runs on one fused lane (executor == reactor).
     thread::spawn(move || {
-        current_thread::run(async move {
+        let io = IoTaskRunner::new();
+        let exec = io.clone();
+        let rt = Runtime::new(
+            move |r: Runnable| {
+                exec.post_task(Box::new(move || {
+                    r.run();
+                }));
+            },
+            io,
+        );
+        block_on(rt.spawn(async move {
             loop {
                 let (stream, _peer) = listener.accept().await.unwrap();
-                current_thread::spawn(async move {
+                spawn(async move {
                     let _ = handle_conn(stream).await;
                 });
             }
-        });
+        }));
     });
 
     let start = Instant::now();
