@@ -43,6 +43,14 @@ impl ThreadGroup {
         group
     }
 
+    /// Turn the calling thread into a worker of this group, blocking until
+    /// shutdown. The thread competes for task sources exactly like a built-in
+    /// worker. It is **not** added to `handles`, so `join_all()` does not join
+    /// it; the loop exits on its own once shutdown is signalled.
+    pub fn run_worker_on_current_thread(self: &Arc<Self>, monitor: Option<Arc<TaskMonitor>>) {
+        worker_loop(Arc::clone(self), monitor);
+    }
+
     pub fn push_task_source(&self, source: Arc<dyn TaskSource>) {
         {
             let mut inner = self.inner.lock().unwrap();

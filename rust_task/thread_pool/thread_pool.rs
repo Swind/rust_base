@@ -100,6 +100,34 @@ impl ThreadPool {
         ))
     }
 
+    /// Turn the **calling thread** into a worker of this pool, blocking until
+    /// `shutdown()` is signalled. The thread competes for posted tasks exactly
+    /// like a built-in worker, and is covered by the monitor if one is
+    /// configured.
+    ///
+    /// Unlike the workers created by [`new`](Self::new), this thread is **not**
+    /// tracked by the pool: `shutdown()` will not join it. The loop exits
+    /// cleanly once shutdown is signalled (`get_work()` returns `None`); the
+    /// caller owns the thread and is responsible for joining it.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::thread;
+    /// use rust_task::ThreadPool;
+    ///
+    /// let pool = ThreadPool::new(2);
+    /// let p = Arc::clone(&pool);
+    /// let extra = thread::spawn(move || p.attach_current_thread());
+    ///
+    /// // ... post work to the pool ...
+    ///
+    /// pool.shutdown();        // signals the attached worker to exit its loop
+    /// extra.join().unwrap();  // the caller joins its own thread
+    /// ```
+    pub fn attach_current_thread(&self) {
+        self.thread_group.run_worker_on_current_thread(self.monitor.as_ref().map(Arc::clone));
+    }
+
     // Signals shutdown and waits for BlockShutdown tasks to complete,
     // then stops all workers and the timer thread.
     pub fn shutdown(&self) {
@@ -262,6 +290,36 @@ mod tests {
 
         pool.thread_group.join_all();
         pool.delayed_task_manager.shutdown();
+    }
+
+    #[test]
+    fn attached_thread_runs_posted_tasks() {
+        use std::thread;
+
+        // A pool with zero built-in workers: the ONLY worker is the one we
+        // attach from a thread we spawn ourselves. If the task runs, the
+        // attached thread genuinely joined the pool.
+        let pool = ThreadPool::new(0);
+        let p = Arc::clone(&pool);
+        let extra = thread::spawn(move || p.attach_current_thread());
+
+        let ran = Arc::new(Mutex::new(false));
+        let r = Arc::clone(&ran);
+        let barrier = Arc::new(Barrier::new(2));
+        let b = Arc::clone(&barrier);
+
+        pool.post_task(
+            default_traits(),
+            Box::new(move || {
+                *r.lock().unwrap() = true;
+                b.wait();
+            }),
+        );
+
+        barrier.wait();
+        pool.shutdown(); // signals the attached worker to exit its loop
+        extra.join().unwrap();
+        assert!(*ran.lock().unwrap());
     }
 
     #[test]
