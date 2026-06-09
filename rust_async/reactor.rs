@@ -73,6 +73,17 @@ struct SourceState {
 
 /// Per-fd reactor state. Implements [`FdWatcher`]; the epoll loop holds only a
 /// `Weak` to it, so the owning I/O object must keep the `Arc` alive.
+///
+/// A `Source` is identified by its raw `fd` number, which is only meaningful
+/// while the owning I/O object (e.g. [`crate::net::Async`]) is alive and holds
+/// the descriptor open. Re-arming is asynchronous (posted to the IO thread), so
+/// if the object is dropped — closing the fd — between a re-arm being posted
+/// and applied, the stale arm could in principle register a watch on a fd
+/// number the OS has since reused. This is self-healing in practice: the watch
+/// is one-shot and carries only a `Weak<Source>`, so once this `Source` is gone
+/// the callback no-ops and the entry is removed. The invariant a caller must
+/// uphold is the usual `rust_io` one — keep the I/O object alive until its
+/// awaited operations resolve.
 pub(crate) struct Source {
     fd: RawFd,
     /// A weak self-reference so callbacks (which only get `&self`) can rebuild
