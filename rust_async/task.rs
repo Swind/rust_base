@@ -53,7 +53,8 @@ impl Future for YieldNow {
 ///
 /// Not cancellable: dropping the returned [`Timer`] before it fires leaves the
 /// delayed task queued on the reactor until `dur` elapses (it then fires into
-/// an empty waker slot and is dropped). See the crate-level "Known limitations".
+/// an empty waker slot and is dropped). See the crate-level "Known
+/// limitations".
 pub fn sleep(dur: Duration) -> Timer {
     Timer {
         dur,
@@ -170,10 +171,10 @@ fn blocking_pool() -> &'static Arc<ThreadPool> {
 /// dedicated parallel [`ThreadPool`] (so several offloads run concurrently),
 /// and when it finishes the result is delivered through a waker — which
 /// re-schedules the **awaiting** task back onto *its own* lane. So if you
-/// `offload(..).await` from a single reactor lane (a [`Runtime`](crate::Runtime)
-/// whose task runner is its own `IoTaskRunner`), the CPU work happens on the
-/// pool and execution resumes on that lane automatically; you never manually
-/// "post the result back".
+/// `offload(..).await` from a single reactor lane (a
+/// [`Runtime`](crate::Runtime) whose task runner is its own `IoTaskRunner`),
+/// the CPU work happens on the pool and execution resumes on that lane
+/// automatically; you never manually "post the result back".
 ///
 /// This is exactly the Future shape of "`await` == post to another task runner,
 /// resume when it replies": the [`Offload`] future *is* that wiring.
