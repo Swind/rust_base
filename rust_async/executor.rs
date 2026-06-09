@@ -20,8 +20,8 @@ use rust_task::ThreadPool;
 pub struct JoinHandle<T>(Option<async_task::Task<T>>);
 
 impl<T> JoinHandle<T> {
-    /// Wrap an `async_task::Task` (used by the alternative schedulers, e.g.
-    /// [`crate::current_thread`]).
+    /// Wrap the `async_task::Task` produced by
+    /// [`Runtime::spawn`](crate::Runtime::spawn).
     pub(crate) fn from_task(task: async_task::Task<T>) -> Self {
         JoinHandle(Some(task))
     }
