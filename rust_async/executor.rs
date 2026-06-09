@@ -16,7 +16,9 @@ use rust_task::ThreadPool;
 ///
 /// Dropping the handle **detaches** the task (it keeps running to completion),
 /// matching `async-std`/Tokio semantics — unlike a bare `async_task::Task`,
-/// which cancels on drop.
+/// which cancels on drop. There is consequently no way to *cancel* a spawned
+/// task through this handle: once spawned it runs to completion. (A panic in
+/// the task propagates to the awaiter of its `JoinHandle`, per `async_task`.)
 pub struct JoinHandle<T>(Option<async_task::Task<T>>);
 
 impl<T> JoinHandle<T> {

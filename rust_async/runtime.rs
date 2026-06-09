@@ -55,6 +55,16 @@ use crate::reactor::reactor;
 /// A (task runner, io task runner) pair onto which futures are spawned. Cheap
 /// to [`Clone`] (just two `Arc`s); clone it to hand the same runtime to several
 /// producers.
+///
+/// ## Scheduling cost
+///
+/// There is no dedicated run-queue or executor loop: every wake-up posts the
+/// task's [`Runnable`](async_task::Runnable) to the task runner as a fresh unit
+/// of work (see [`Runtime::new`]). On a parallel pool that is one dispatch per
+/// poll, and the task may resume on a different worker each time (no affinity to
+/// the waking thread). This keeps the runtime a thin layer over `rust_task`,
+/// but is heavier than a purpose-built scheduler's run queue; it is the main
+/// place to look first if throughput matters.
 #[derive(Clone)]
 pub struct Runtime {
     schedule: Arc<dyn Fn(Runnable) + Send + Sync>,
