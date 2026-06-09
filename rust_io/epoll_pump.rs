@@ -173,9 +173,17 @@ impl MessagePumpForIo for EpollMessagePump {
                 let (watcher_opt, can_read, can_write) = {
                     let mut watches = self.watches.lock().unwrap();
                     let Some(entry) = watches.get(&fd) else { continue };
-                    let can_read = (ev_flags & libc::EPOLLIN as u32) != 0
+                    // An error or hang-up (EPOLLERR/EPOLLHUP) is reported even
+                    // when the caller only asked for EPOLLIN/EPOLLOUT, and may
+                    // arrive *without* either of them (e.g. a failed connect or
+                    // a peer reset). Treat it as readiness in every watched
+                    // direction so the waiter wakes and the next syscall
+                    // surfaces the real error, instead of stranding a one-shot
+                    // watcher that never fires.
+                    let errored = (ev_flags & (libc::EPOLLERR | libc::EPOLLHUP) as u32) != 0;
+                    let can_read = (ev_flags & libc::EPOLLIN as u32 != 0 || errored)
                         && matches!(entry.mode, WatchMode::Read | WatchMode::ReadWrite);
-                    let can_write = (ev_flags & libc::EPOLLOUT as u32) != 0
+                    let can_write = (ev_flags & libc::EPOLLOUT as u32 != 0 || errored)
                         && matches!(entry.mode, WatchMode::Write | WatchMode::ReadWrite);
                     let watcher = entry.watcher.upgrade();
                     if !entry.persistent {
