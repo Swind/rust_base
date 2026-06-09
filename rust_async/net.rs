@@ -54,6 +54,11 @@ struct Inner {
 /// `Async` is cheaply [`Clone`]: clones share the same fd and reactor
 /// registration, so one clone can read while another writes concurrently (the
 /// "split" use case). This mirrors `async-std`'s `TcpStream: Clone`.
+///
+/// Its [`AsyncWrite::poll_close`] performs a *half-close* — `shutdown(Write)`,
+/// signalling EOF to the peer while leaving the read half usable — not a full
+/// socket close. The underlying fd is closed only when the last clone is
+/// dropped.
 #[derive(Clone)]
 pub struct Async {
     inner: Arc<Inner>,

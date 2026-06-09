@@ -14,6 +14,11 @@
 //! obviously correct under cancellation — a woken-then-dropped future can never
 //! strand the others — at the cost of some redundant polls. Fairness is
 //! best-effort FIFO via monotonic wait ids.
+//!
+//! [`RwLock`] is read-preferring with no writer preference: a reader acquires
+//! whenever no writer is *active*, so a steady stream of readers can starve a
+//! waiting writer. Use [`Mutex`] if you need writers to make progress under
+//! continuous read load.
 
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, VecDeque};
