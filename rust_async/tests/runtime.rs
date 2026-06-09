@@ -9,52 +9,26 @@ use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use rust_async::{Runnable, Runtime, block_on, offload, sleep, spawn};
+use rust_async::{Runtime, block_on, offload, sleep, spawn};
 use rust_io::IoTaskRunner;
-use rust_task::{TaskRunner, TaskTraits, ThreadPool};
+use rust_task::{TaskTraits, ThreadPool};
 
 /// One fused lane: a single `IoTaskRunner` is *both* the executor (where tasks
 /// are polled) and the reactor (where their I/O is armed).
 fn fused() -> Runtime {
     let io = IoTaskRunner::new();
-    let exec = io.clone();
-    Runtime::new(
-        move |r: Runnable| {
-            exec.post_task(Box::new(move || {
-                r.run();
-            }));
-        },
-        io,
-    )
+    Runtime::new(io.clone(), io)
 }
 
 /// A parallel `ThreadPool` executor paired with its own dedicated reactor.
 fn parallel(threads: usize) -> Runtime {
     let pool = ThreadPool::new(threads);
-    Runtime::new(
-        move |r: Runnable| {
-            pool.post_task(
-                TaskTraits::default(),
-                Box::new(move || {
-                    r.run();
-                }),
-            );
-        },
-        IoTaskRunner::new(),
-    )
+    Runtime::new(pool.create_task_runner(TaskTraits::default()), IoTaskRunner::new())
 }
 
 /// One ordered `SequencedTaskRunner` on `pool`, paired with its own reactor.
 fn sequenced(pool: &Arc<ThreadPool>) -> Runtime {
-    let seq = pool.create_sequenced_task_runner(TaskTraits::default());
-    Runtime::new(
-        move |r: Runnable| {
-            seq.post_task(Box::new(move || {
-                r.run();
-            }));
-        },
-        IoTaskRunner::new(),
-    )
+    Runtime::new(pool.create_sequenced_task_runner(TaskTraits::default()), IoTaskRunner::new())
 }
 
 #[test]

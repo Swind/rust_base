@@ -3,8 +3,8 @@
 //! A [`Runtime`] is the one configurable abstraction this crate offers, and it
 //! is deliberately tiny — two fields:
 //!
-//! - a **schedule** function (where a task's `Runnable` is posted when it is
-//!   woken — i.e. *which task runner* polls the futures), and
+//! - a **task runner** (where a woken task is posted to be polled — any
+//!   [`rust_task::TaskRunner`]: parallel, sequenced, or an `IoTaskRunner`), and
 //! - a **reactor** (`rust_io::IoTaskRunner`, where `await`ing I/O arms epoll
 //!   and from where readiness wakes the task).
 //!
@@ -14,33 +14,27 @@
 //! arms* — so every topology becomes a choice of these two arguments rather
 //! than a separate module:
 //!
-//! | want…                  | `schedule` posts to            | `reactor`            |
+//! | want…                  | task runner is…                | `reactor`            |
 //! |------------------------|--------------------------------|----------------------|
 //! | one fused lane         | an `IoTaskRunner` (itself)     | that same runner     |
-//! | a parallel pool        | a `ThreadPool`                 | a shared/own reactor |
-//! | an ordered lane        | a `SequencedTaskRunner`        | a shared/own reactor |
+//! | a parallel pool        | `pool.create_task_runner(..)`  | a shared/own reactor |
+//! | an ordered lane        | `pool.create_sequenced_..(..)` | a shared/own reactor |
 //! | thread-per-core        | lane *k*                       | lane *k*             |
 //!
-//! The `schedule` closure *is* the adapter: `TaskRunner::post_task` and
-//! `SequencedTaskRunner::post_task` have different signatures, but both
-//! collapse to `Fn(Runnable)`. Build whichever runner you want (configuring its
-//! monitoring/traits at creation) and wrap its `post_task` in the closure.
+//! Any [`rust_task::TaskRunner`] works as the executor: a parallel or sequenced
+//! runner created from a `ThreadPool`, or an `IoTaskRunner` itself (it
+//! implements `TaskRunner`) for a fused lane. You configure traits/monitoring
+//! when you *create* the runner; [`Runtime::new`] just wraps its `post_task` to
+//! run woken [`Runnable`](async_task::Runnable)s.
 //!
 //! ```no_run
-//! use std::sync::Arc;
-//! use rust_async::{block_on, Runnable, Runtime};
+//! use rust_async::{block_on, Runtime};
 //! use rust_io::IoTaskRunner;
 //! use rust_task::{TaskTraits, ThreadPool};
 //!
 //! // A parallel-pool executor paired with its own dedicated reactor.
 //! let pool = ThreadPool::new(4);
-//! let reactor = IoTaskRunner::new();
-//! let rt = Runtime::new(
-//!     move |r: Runnable| {
-//!         pool.post_task(TaskTraits::default(), Box::new(move || { r.run(); }));
-//!     },
-//!     reactor,
-//! );
+//! let rt = Runtime::new(pool.create_task_runner(TaskTraits::default()), IoTaskRunner::new());
 //!
 //! // Drive a root to completion on the calling thread; tasks it spawns inherit `rt`.
 //! let n = block_on(rt.spawn(async { 1 + 2 }));
@@ -52,7 +46,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_task::Runnable;
 use rust_io::IoTaskRunner;
-use rust_task::TaskTraits;
+use rust_task::{TaskRunner, TaskTraits};
 
 use crate::executor::{JoinHandle, pool};
 use crate::local::{current_runtime, tag_with};
@@ -68,16 +62,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Pair a `schedule` function (where woken tasks are posted) with a
-    /// `reactor` (where `await`ed I/O is armed and woken from).
+    /// Pair a task `runner` (where woken futures are polled) with a `reactor`
+    /// (where `await`ed I/O is armed and woken from).
     ///
-    /// `schedule` receives the task's [`Runnable`]; run it on whatever task
-    /// runner you want by wrapping its `post_task`, e.g.
-    /// `move |r| my_runner.post_task(Box::new(move || r.run()))`.
-    pub fn new(
-        schedule: impl Fn(Runnable) + Send + Sync + 'static,
-        reactor: Arc<IoTaskRunner>,
-    ) -> Runtime {
+    /// `runner` is any [`TaskRunner`]: a parallel or sequenced runner created
+    /// from a [`ThreadPool`](rust_task::ThreadPool), or an `IoTaskRunner`
+    /// itself for a fused lane. Each woken task's
+    /// [`Runnable`](async_task::Runnable) is posted to it.
+    pub fn new(runner: Arc<dyn TaskRunner>, reactor: Arc<IoTaskRunner>) -> Runtime {
+        let schedule = move |r: Runnable| {
+            runner.post_task(Box::new(move || {
+                r.run();
+            }));
+        };
         Runtime { schedule: Arc::new(schedule), reactor }
     }
 
@@ -110,17 +107,7 @@ pub(crate) fn global() -> Runtime {
     static GLOBAL: OnceLock<Runtime> = OnceLock::new();
     GLOBAL
         .get_or_init(|| {
-            Runtime::new(
-                |r: Runnable| {
-                    pool().post_task(
-                        TaskTraits::default(),
-                        Box::new(move || {
-                            r.run();
-                        }),
-                    );
-                },
-                reactor().io.clone(),
-            )
+            Runtime::new(pool().create_task_runner(TaskTraits::default()), reactor().io.clone())
         })
         .clone()
 }

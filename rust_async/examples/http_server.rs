@@ -24,11 +24,10 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{Runnable, Runtime, offload, spawn};
+use rust_async::{Runtime, offload, spawn};
 use rust_io::IoTaskRunner;
 use rust_task::{TaskTraits, ThreadPool};
 
@@ -39,18 +38,7 @@ fn main() -> io::Result<()> {
 
     // Executor: a pool of worker threads. Reactor: its own IoTaskRunner thread.
     let pool = ThreadPool::new(4);
-    let exec = Arc::clone(&pool);
-    let rt = Runtime::new(
-        move |r: Runnable| {
-            exec.post_task(
-                TaskTraits::default(),
-                Box::new(move || {
-                    r.run();
-                }),
-            );
-        },
-        IoTaskRunner::new(),
-    );
+    let rt = Runtime::new(pool.create_task_runner(TaskTraits::default()), IoTaskRunner::new());
 
     // Post the entrypoint onto the runtime; each connection is spawned with the
     // free `spawn`, inheriting `rt`, so it runs on the same pool.

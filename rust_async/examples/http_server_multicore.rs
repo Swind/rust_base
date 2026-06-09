@@ -20,22 +20,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{Runnable, Runtime, block_on};
+use rust_async::{Runtime, block_on};
 use rust_io::IoTaskRunner;
-use rust_task::TaskRunner;
 
 /// One fused lane: an `IoTaskRunner` used as both executor and reactor.
 fn lane() -> Runtime {
     let io = IoTaskRunner::new();
-    let exec = io.clone();
-    Runtime::new(
-        move |r: Runnable| {
-            exec.post_task(Box::new(move || {
-                r.run();
-            }));
-        },
-        io,
-    )
+    Runtime::new(io.clone(), io)
 }
 
 fn main() -> io::Result<()> {

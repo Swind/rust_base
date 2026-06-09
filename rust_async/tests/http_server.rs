@@ -8,9 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{Runnable, Runtime, block_on, sleep, spawn};
+use rust_async::{Runtime, block_on, sleep, spawn};
 use rust_io::IoTaskRunner;
-use rust_task::TaskRunner;
 
 const N_CLIENTS: usize = 64;
 const HANDLER_DELAY: Duration = Duration::from_millis(20);
@@ -49,15 +48,7 @@ fn single_lane_serves_many_concurrent_connections() {
     // The entire server runs on one fused lane (executor == reactor).
     thread::spawn(move || {
         let io = IoTaskRunner::new();
-        let exec = io.clone();
-        let rt = Runtime::new(
-            move |r: Runnable| {
-                exec.post_task(Box::new(move || {
-                    r.run();
-                }));
-            },
-            io,
-        );
+        let rt = Runtime::new(io.clone(), io);
         block_on(rt.spawn(async move {
             loop {
                 let (stream, _peer) = listener.accept().await.unwrap();

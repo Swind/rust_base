@@ -11,7 +11,7 @@
 //!
 //! | Runtime concept            | Provided by                                   |
 //! |----------------------------|-----------------------------------------------|
-//! | Runnable queue / re-schedule | [`async_task`] + a [`Runtime`]'s schedule fn |
+//! | Runnable queue / re-schedule | [`async_task`] + a [`Runtime`]'s task runner |
 //! | Reactor (epoll → `Waker`)  | `rust_io::IoTaskRunner` + an `FdWatcher` that wakes |
 //! | `block_on`                 | thread-parking waker on the calling thread    |
 //! | `spawn`                    | `async_task::spawn` scheduled onto a [`Runtime`] |
@@ -93,7 +93,6 @@ pub mod prelude {
 }
 
 // Convenience re-exports at the crate root (the most-reached-for items).
-pub use async_task::Runnable;
 pub use block_on::block_on;
 pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
