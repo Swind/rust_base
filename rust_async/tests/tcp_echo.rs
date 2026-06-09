@@ -152,6 +152,70 @@ fn cloned_stream_concurrent_read_write() {
     assert_eq!(got, b"duplex");
 }
 
+/// Sustained full-duplex traffic on a single fd: one task floods writes while
+/// another drains reads on a *clone* of the same socket. Because both halves
+/// stay parked at once for the whole transfer, the reactor is continuously
+/// re-arming the read and write directions together (one-shot, level-triggered)
+/// under back-pressure — the most intricate path in `reactor.rs`, which the
+/// single-round-trip `cloned_stream_concurrent_read_write` above barely grazes.
+#[test]
+fn cloned_stream_full_duplex_stress() {
+    use futures_lite::AsyncWriteExt;
+
+    // Comfortably past the kernel socket buffers, so writes and reads both hit
+    // WouldBlock many times and re-arm repeatedly.
+    const LEN: usize = 4 * 1024 * 1024;
+    let expected: Vec<u8> = (0..LEN).map(|i| (i % 251) as u8).collect();
+
+    // Blocking echo server: copy every chunk back until the client half-closes.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = sock.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            sock.write_all(&buf[..n]).unwrap();
+        }
+    });
+
+    let payload = expected.clone();
+    let got = block_on(async move {
+        let mut writer = Async::connect(addr).await.unwrap();
+        let reader = writer.clone(); // shares fd + reactor registration
+
+        let read_task = spawn(async move {
+            let mut out = Vec::with_capacity(LEN);
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = reader.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+            out
+        });
+
+        let write_task = spawn(async move {
+            writer.write_all(&payload).await.unwrap();
+            // Half-close write so the server loop and our reader both see EOF.
+            writer.close().await.unwrap();
+        });
+
+        write_task.await;
+        let out = read_task.await;
+        server.join().unwrap();
+        out
+    });
+
+    assert_eq!(got.len(), LEN);
+    assert!(got == expected, "echoed bytes did not round-trip intact");
+}
+
 /// UDP datagram round-trip via `send_to`/`recv_from`.
 #[test]
 fn udp_send_recv() {
