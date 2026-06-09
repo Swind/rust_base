@@ -1,12 +1,19 @@
-//! A minimal HTTP/1.1 server on a **single fused lane**.
+//! A minimal HTTP/1.1 server where **`main` itself joins the runtime's pool**.
 //!
-//! The runtime is one `IoTaskRunner` used as *both* the executor and the
-//! reactor, so everything — the accept loop, every connection, the reactor's
-//! epoll, and the response writing — runs on **one** thread. Concurrency comes
-//! from `async`/`.await`, not from threads: when a connection blocks on a
-//! socket read, the lane moves on to another ready connection. The only other
-//! threads in the process are the parallel pool that `offload` uses for heavy
-//! work.
+//! There is no `block_on` here. Instead the pattern is the one the runtime is
+//! built for:
+//!
+//! 1. Build a [`Runtime`] = a `ThreadPool` executor + a reactor
+//!    (`IoTaskRunner`).
+//! 2. `rt.spawn(...)` the entrypoint (the accept loop) onto that runtime.
+//! 3. Have `main` *join the pool* via [`ThreadPool::attach_current_thread`], so
+//!    the main thread becomes one more worker instead of parking idle.
+//!
+//! The executor is a pool of worker threads (plus `main`); the reactor runs on
+//! its own thread. Connections are spawned with the free [`spawn`], inheriting
+//! the runtime, so they are processed by any worker. A server's accept loop
+//! never returns, so the process runs until killed (or until someone calls
+//! `pool.shutdown()`, which is what releases `attach_current_thread`).
 //!
 //! Run it:
 //! ```text
@@ -17,34 +24,37 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use futures_lite::AsyncWriteExt; // for `.close()`; read/write are inherent on `Async`
 use rust_async::net::{Async, TcpListener};
-use rust_async::{Runnable, Runtime, block_on, offload, spawn};
+use rust_async::{Runnable, Runtime, offload, spawn};
 use rust_io::IoTaskRunner;
-use rust_task::TaskRunner;
+use rust_task::{TaskTraits, ThreadPool};
 
 fn main() -> io::Result<()> {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let listener = TcpListener::bind(addr)?;
     println!("listening on http://{addr}  (try / and /compute)");
 
-    // One fused lane: the same IoTaskRunner is the executor and the reactor.
-    let io = IoTaskRunner::new();
-    let exec = io.clone();
+    // Executor: a pool of worker threads. Reactor: its own IoTaskRunner thread.
+    let pool = ThreadPool::new(4);
+    let exec = Arc::clone(&pool);
     let rt = Runtime::new(
         move |r: Runnable| {
-            exec.post_task(Box::new(move || {
-                r.run();
-            }));
+            exec.post_task(
+                TaskTraits::default(),
+                Box::new(move || {
+                    r.run();
+                }),
+            );
         },
-        io,
+        IoTaskRunner::new(),
     );
 
-    // `block_on` waits on the calling thread; the server runs on the lane. Each
-    // connection task is spawned with the free `spawn`, inheriting `rt`, so it
-    // stays on the same single lane.
-    block_on(rt.spawn(async move {
+    // Post the entrypoint onto the runtime; each connection is spawned with the
+    // free `spawn`, inheriting `rt`, so it runs on the same pool.
+    rt.spawn(async move {
         loop {
             let (stream, peer) = match listener.accept().await {
                 Ok(pair) => pair,
@@ -59,7 +69,13 @@ fn main() -> io::Result<()> {
                 }
             });
         }
-    }))
+    });
+
+    // `main` joins the pool as one more worker and runs until shutdown. The
+    // accept loop never completes, so for a server this blocks for the process
+    // lifetime — no idle parked thread, `main` does real work.
+    pool.attach_current_thread();
+    Ok(())
 }
 
 /// Read one request, route it, write one response, half-close.
