@@ -21,7 +21,7 @@ use std::time::Duration;
 pub use futures_core::Stream;
 use rust_task::TaskRunner;
 
-use crate::reactor::reactor;
+use crate::reactor::io_runner;
 
 // ── StreamExt ───────────────────────────────────────────────────────────────
 
@@ -374,7 +374,7 @@ impl Stream for Interval {
         if !this.scheduled {
             this.scheduled = true;
             let state = this.state.clone();
-            reactor().io.post_delayed_task(
+            io_runner().post_delayed_task(
                 Box::new(move || {
                     let waker = {
                         let mut s = state.lock().unwrap();
