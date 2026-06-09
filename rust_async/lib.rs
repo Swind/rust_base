@@ -46,6 +46,12 @@
 //! - Linux only (inherits `rust_io`).
 //! - Combinators on [`net::Async`] come from the `futures` ecosystem (it
 //!   implements `futures_io`'s traits); we do not re-implement them.
+//! - **Timers are not cancellable.** Dropping a [`task::sleep`] /
+//!   [`task::timeout`] / [`stream::interval`] future does not unschedule the
+//!   delayed task already queued on the reactor — it still fires once, into a
+//!   now-empty waker slot. Harmless per-timer, but many long-deadline timeouts
+//!   can accumulate pending reactor work until their deadlines elapse. A
+//!   production runtime would use a cancellable timer (e.g. a timer wheel).
 //!
 //! See `docs/runtime-feasibility.md` for the full roadmap and how each piece
 //! maps onto its `async-std` counterpart.

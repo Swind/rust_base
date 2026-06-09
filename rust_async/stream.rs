@@ -340,6 +340,11 @@ impl<I: Iterator> Stream for FromIter<I> {
 /// This is the runtime-specific constructor: each tick is a
 /// `rust_io::IoTaskRunner::post_delayed_task` whose firing wakes the parked
 /// task — the same delayed-task → `Waker` bridge as [`crate::sleep`].
+///
+/// The next tick is scheduled when the current one is consumed, so the cadence
+/// drifts by however long the consumer takes between polls (it is not a
+/// fixed-rate clock). Like [`crate::sleep`], a pending tick is not cancelled
+/// when the `Interval` is dropped.
 pub fn interval(period: Duration) -> Interval {
     Interval {
         period,

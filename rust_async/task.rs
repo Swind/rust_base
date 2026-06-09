@@ -50,6 +50,10 @@ impl Future for YieldNow {
 // ── sleep ───────────────────────────────────────────────────────────────────
 
 /// Sleep for `dur`, driven by the reactor's delayed-task timer.
+///
+/// Not cancellable: dropping the returned [`Timer`] before it fires leaves the
+/// delayed task queued on the reactor until `dur` elapses (it then fires into
+/// an empty waker slot and is dropped). See the crate-level "Known limitations".
 pub fn sleep(dur: Duration) -> Timer {
     Timer {
         dur,
