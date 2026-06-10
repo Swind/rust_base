@@ -151,3 +151,16 @@ fn rename_and_copy() {
         std::fs::remove_file(p).ok();
     }
 }
+
+#[test]
+fn dir_builder_recursive() {
+    use rust_async::fs::DirBuilder;
+
+    let base = temp_path();
+    let nested = base.join("a").join("b").join("c");
+    block_on(async {
+        DirBuilder::new().recursive(true).create(&nested).await.unwrap();
+        assert!(fs::metadata(&nested).await.unwrap().is_dir());
+        fs::remove_dir_all(&base).await.unwrap();
+    });
+}

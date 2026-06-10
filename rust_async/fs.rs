@@ -224,6 +224,52 @@ impl OpenOptions {
     }
 }
 
+// ── DirBuilder ─────────────────────────────────────────────────────────────
+
+/// Builder for creating directories with configurable recursion (and, on Unix,
+/// mode), mirroring `async_std::fs::DirBuilder`.
+#[derive(Debug, Default)]
+pub struct DirBuilder {
+    recursive: bool,
+    mode: Option<u32>,
+}
+
+impl DirBuilder {
+    /// A new builder that creates a single directory (non-recursive).
+    pub fn new() -> DirBuilder {
+        DirBuilder { recursive: false, mode: None }
+    }
+
+    /// Create missing parent directories as needed.
+    pub fn recursive(&mut self, recursive: bool) -> &mut Self {
+        self.recursive = recursive;
+        self
+    }
+
+    /// Set the Unix mode (permission bits) for created directories.
+    pub fn mode(&mut self, mode: u32) -> &mut Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    /// Create the directory at `path` with the configured options.
+    pub async fn create(&self, path: impl Into<PathBuf>) -> io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let recursive = self.recursive;
+        let mode = self.mode;
+        let path = path.into();
+        fs_blocking(move || {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(recursive);
+            if let Some(mode) = mode {
+                builder.mode(mode);
+            }
+            builder.create(&path)
+        })
+        .await
+    }
+}
+
 // ── File ────────────────────────────────────────────────────────────────────
 
 /// An async handle to an open file with a read/write cursor.
