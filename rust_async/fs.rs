@@ -5,6 +5,22 @@
 //! delivers the result via callback). We only add the Future façade — post the
 //! op onto the reactor's IO thread (where `FileProxy` requires to be called)
 //! and turn its result callback into a `Waker` wake-up via a one-shot channel.
+//!
+//! ## Sizing the blocking pool
+//!
+//! Regular files have no epoll readiness signal, so file ops run as blocking
+//! `pread`/`pwrite` calls on a dedicated thread pool. That pool's worker count
+//! caps how many file operations run concurrently; it is resolved once, lazily,
+//! on first use, in this order:
+//!
+//! 1. [`init_pool(n)`](init_pool) — call before the first `fs` use.
+//! 2. the `RUST_ASYNC_FS_THREADS` environment variable.
+//! 3. [`DEFAULT_FS_THREADS`] (4).
+//!
+//! ```no_run
+//! // Run up to 16 file operations concurrently.
+//! rust_async::fs::init_pool(16);
+//! ```
 
 use std::future::Future;
 use std::io;
@@ -20,8 +36,53 @@ use crate::reactor::io_runner;
 
 static FS_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
+/// Default worker count for the blocking filesystem pool, used when neither
+/// [`init_pool`] nor the `RUST_ASYNC_FS_THREADS` environment variable applies.
+const DEFAULT_FS_THREADS: usize = 4;
+
+/// Configure the number of worker threads backing the async filesystem API.
+///
+/// File operations are not epoll-driven (regular files have no readiness
+/// signal); they run as blocking `pread`/`pwrite` calls on a dedicated thread
+/// pool. This sets that pool's size, capping how many file operations run
+/// concurrently.
+///
+/// Call this **before** the first use of any `fs` function ([`read`],
+/// [`write`], [`File::open`], …). The pool is created lazily on first use, so
+/// once it exists the size is fixed.
+///
+/// Returns `true` if the size took effect, or `false` if the pool was already
+/// initialised (by an earlier `fs` call or a prior `init_pool`), in which case
+/// the existing pool is left unchanged.
+///
+/// If this is never called, the size comes from the `RUST_ASYNC_FS_THREADS`
+/// environment variable, falling back to [`DEFAULT_FS_THREADS`] (4).
+pub fn init_pool(num_threads: usize) -> bool {
+    let num_threads = num_threads.max(1);
+    let mut created = false;
+    FS_POOL.get_or_init(|| {
+        created = true;
+        ThreadPool::new(num_threads)
+    });
+    created
+}
+
+/// Worker count from `RUST_ASYNC_FS_THREADS`, or [`DEFAULT_FS_THREADS`] when
+/// the variable is unset, empty, or not a positive integer.
+fn configured_fs_threads() -> usize {
+    parse_fs_threads(std::env::var("RUST_ASYNC_FS_THREADS").ok())
+}
+
+/// Pure parsing of the thread-count override; falls back to
+/// [`DEFAULT_FS_THREADS`] for `None`, empty, non-numeric, or zero input.
+fn parse_fs_threads(raw: Option<String>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_FS_THREADS)
+}
+
 fn fs_pool() -> Arc<ThreadPool> {
-    FS_POOL.get_or_init(|| ThreadPool::new(4)).clone()
+    FS_POOL.get_or_init(|| ThreadPool::new(configured_fs_threads())).clone()
 }
 
 // ── one-shot result channel (callback → Future) ─────────────────────────────
@@ -139,4 +200,23 @@ pub async fn read(path: impl Into<PathBuf>) -> io::Result<Vec<u8>> {
 /// Write a slice as the entire contents of a file, creating/truncating it.
 pub async fn write(path: impl Into<PathBuf>, data: Vec<u8>) -> io::Result<()> {
     File::open(path).write_all(data).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_FS_THREADS, parse_fs_threads};
+
+    #[test]
+    fn parse_fs_threads_overrides() {
+        assert_eq!(parse_fs_threads(Some("8".into())), 8);
+        assert_eq!(parse_fs_threads(Some("  16 ".into())), 16);
+    }
+
+    #[test]
+    fn parse_fs_threads_falls_back() {
+        assert_eq!(parse_fs_threads(None), DEFAULT_FS_THREADS);
+        assert_eq!(parse_fs_threads(Some("".into())), DEFAULT_FS_THREADS);
+        assert_eq!(parse_fs_threads(Some("abc".into())), DEFAULT_FS_THREADS);
+        assert_eq!(parse_fs_threads(Some("0".into())), DEFAULT_FS_THREADS);
+    }
 }

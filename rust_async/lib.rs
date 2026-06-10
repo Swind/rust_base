@@ -36,7 +36,8 @@
 //!   [`net::TcpListener`], [`net::UdpSocket`].
 //! - [`io`] — the ecosystem-standard [`futures_io`] `AsyncRead`/`AsyncWrite`
 //!   traits that [`net::Async`] implements.
-//! - [`fs`] — async files over `rust_io::FileProxy`.
+//! - [`fs`] — async files over `rust_io::FileProxy`; the blocking pool size is
+//!   configurable via [`fs::init_pool`] or `RUST_ASYNC_FS_THREADS`.
 //! - [`sync`] — async `Mutex`/`RwLock`/`Barrier`/`channel`.
 //! - [`stream`] — the [`futures_core`] `Stream` trait plus combinators.
 //! - [`prelude`] — the traits you usually want in scope.
