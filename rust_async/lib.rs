@@ -35,7 +35,8 @@
 //! - [`net`] — [`net::Async`] (a reactor-backed `TcpStream`),
 //!   [`net::TcpListener`], [`net::UdpSocket`].
 //! - [`io`] — the ecosystem-standard [`futures_io`] `AsyncRead`/`AsyncWrite`
-//!   traits that [`net::Async`] implements.
+//!   traits that [`net::Async`] implements, plus buffering (`BufReader`,
+//!   `BufWriter`, `Cursor`, `io::copy`) re-exported from `futures-util`.
 //! - [`fs`] — async files over `rust_io::FileProxy`, plus directory/metadata
 //!   operations ([`fs::create_dir_all`], [`fs::read_dir`], [`fs::metadata`],
 //!   …); the blocking pool size is configurable via [`fs::init_pool`] or
@@ -84,13 +85,20 @@ pub mod task {
     };
 }
 
-/// Async I/O traits, mirroring `async_std::io`.
+/// Async I/O traits and buffering, mirroring `async_std::io`.
 ///
-/// These are the de-facto-standard [`futures_io`] traits (the same ones
-/// `async-std` re-exports), so types here interoperate with the wider
-/// `futures` ecosystem.
+/// The traits are the de-facto-standard [`futures_io`] ones (the same ones
+/// `async-std` re-exports), so types here interoperate with the wider `futures`
+/// ecosystem. The buffering adapters and extension traits come straight from
+/// [`futures_util`] — they are generic over any `AsyncRead`/`AsyncWrite`
+/// (including our [`net::Async`] and [`fs::File`]) and carry no
+/// runtime-specific behaviour, so we re-export rather than re-implement them.
 pub mod io {
-    pub use futures_io::{AsyncRead, AsyncWrite};
+    pub use futures_io::{AsyncRead, AsyncSeek, AsyncWrite};
+    pub use futures_util::io::{
+        AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, Cursor,
+        copy,
+    };
 }
 
 /// The traits you usually want in scope, mirroring `async_std::prelude`.

@@ -16,6 +16,7 @@ rust_io = { path = "../rust_io" }
 async-task = "4"
 futures-core = "0.3"
 futures-io = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std", "io"] }
 libc = { workspace = true }
 
 [dev-dependencies]
