@@ -93,6 +93,42 @@ impl ThreadGroup {
     }
 }
 
+fn worker_loop(group: Arc<ThreadGroup>, monitor: Option<Arc<TaskMonitor>>) {
+    let slot = monitor.as_ref().map(|m| m.register_worker());
+
+    while let Some(registered) = group.get_work() {
+        let source = registered.into_source();
+        let env = source.get_execution_environment();
+
+        let _token_guard = ScopedSequenceToken::new(env.token);
+        let _default_handle = env.task_runner.map(CurrentDefaultHandle::new);
+
+        // Only clear has_worker and re-enqueue when we actually claimed the sequence.
+        // If Disallowed, another worker already owns it; calling did_process_task()
+        // here would clear that worker's has_worker flag and allow concurrent
+        // execution.
+        let claimed = match source.will_run_task() {
+            RunStatus::Disallowed => false,
+            _ => {
+                if let Some(task) = source.take_task() {
+                    if let Some(ref s) = slot {
+                        s.task_started();
+                    }
+                    (task.callback)();
+                    if let Some(ref s) = slot {
+                        s.task_finished();
+                    }
+                }
+                true
+            }
+        };
+
+        if claimed && source.did_process_task() {
+            group.push_task_source(source);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,41 +217,5 @@ mod tests {
 
         barrier.wait(); // all three parties must arrive simultaneously
         group.join_all();
-    }
-}
-
-fn worker_loop(group: Arc<ThreadGroup>, monitor: Option<Arc<TaskMonitor>>) {
-    let slot = monitor.as_ref().map(|m| m.register_worker());
-
-    while let Some(registered) = group.get_work() {
-        let source = registered.into_source();
-        let env = source.get_execution_environment();
-
-        let _token_guard = ScopedSequenceToken::new(env.token);
-        let _default_handle = env.task_runner.map(CurrentDefaultHandle::new);
-
-        // Only clear has_worker and re-enqueue when we actually claimed the sequence.
-        // If Disallowed, another worker already owns it; calling did_process_task()
-        // here would clear that worker's has_worker flag and allow concurrent
-        // execution.
-        let claimed = match source.will_run_task() {
-            RunStatus::Disallowed => false,
-            _ => {
-                if let Some(task) = source.take_task() {
-                    if let Some(ref s) = slot {
-                        s.task_started();
-                    }
-                    (task.callback)();
-                    if let Some(ref s) = slot {
-                        s.task_finished();
-                    }
-                }
-                true
-            }
-        };
-
-        if claimed && source.did_process_task() {
-            group.push_task_source(source);
-        }
     }
 }
