@@ -1,10 +1,12 @@
-//! Stage 4: async filesystem access over `rust_io::FileProxy`.
+//! Async filesystem access: positional helpers, directory/metadata ops, and
+//! the cursor-based `File` (AsyncRead/AsyncWrite/AsyncSeek).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rust_async::block_on;
-use rust_async::fs::{self, File};
+use rust_async::fs::{self, File, OpenOptions};
+use rust_async::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -28,14 +30,62 @@ fn write_then_read_round_trip() {
 fn positional_and_append() {
     let path = temp_path();
     block_on(async {
-        let f = File::open(&path);
-        f.write_all(b"0000000000".to_vec()).await.unwrap();
+        let f = OpenOptions::new().read(true).write(true).create(true).open(&path).await.unwrap();
+        f.write_at(0, b"0000000000".to_vec()).await.unwrap();
         f.write_at(3, b"XYZ".to_vec()).await.unwrap();
         let part = f.read_at(3, 3).await.unwrap();
         assert_eq!(part, b"XYZ");
         f.append(b"!!".to_vec()).await.unwrap();
         let all = f.read_all().await.unwrap();
         assert_eq!(all, b"000XYZ0000!!");
+    });
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn cursor_read_write_seek_via_traits() {
+    let path = temp_path();
+    block_on(async {
+        // Sequential cursor writes through the AsyncWrite trait.
+        let mut f = File::create(&path).await.unwrap();
+        f.write_all(b"hello ").await.unwrap();
+        f.write_all(b"world").await.unwrap();
+        f.flush().await.unwrap();
+
+        // Re-open and read sequentially via AsyncRead.
+        let mut r = File::open(&path).await.unwrap();
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(buf, b"hello world");
+
+        // Seek then read from the new cursor position.
+        r.seek(std::io::SeekFrom::Start(6)).await.unwrap();
+        let mut rest = [0u8; 5];
+        r.read_exact(&mut rest).await.unwrap();
+        assert_eq!(&rest, b"world");
+
+        // SeekFrom::End resolves the length off the executor.
+        let end = r.seek(std::io::SeekFrom::End(0)).await.unwrap();
+        assert_eq!(end, 11);
+    });
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn file_via_buf_reader_lines() {
+    use rust_async::io::{AsyncBufReadExt, BufReader};
+    use rust_async::stream::StreamExt;
+
+    let path = temp_path();
+    block_on(async {
+        File::create(&path).await.unwrap().write_all(b"a\nb\nc\n").await.unwrap();
+        let reader = BufReader::new(File::open(&path).await.unwrap());
+        let mut got = Vec::new();
+        let mut lines = reader.lines();
+        while let Some(line) = lines.next().await {
+            got.push(line.unwrap());
+        }
+        assert_eq!(got, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
     });
     std::fs::remove_file(&path).ok();
 }

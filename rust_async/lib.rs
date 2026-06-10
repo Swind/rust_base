@@ -38,9 +38,10 @@
 //!   traits that [`net::Async`] implements, buffering (`BufReader`,
 //!   `BufWriter`, `Cursor`, `io::copy`) re-exported from `futures-util`, and
 //!   the standard streams [`io::stdin`]/[`io::stdout`]/[`io::stderr`].
-//! - [`fs`] — async files over `rust_io::FileProxy`, plus directory/metadata
-//!   operations ([`fs::create_dir_all`], [`fs::read_dir`], [`fs::metadata`],
-//!   …); the blocking pool size is configurable via [`fs::init_pool`] or
+//! - [`fs`] — cursor-based [`fs::File`] (AsyncRead/AsyncWrite/AsyncSeek) and
+//!   [`fs::OpenOptions`], plus directory/metadata operations
+//!   ([`fs::create_dir_all`], [`fs::read_dir`], [`fs::metadata`], …); the
+//!   blocking pool size is configurable via [`fs::init_pool`] or
 //!   `RUST_ASYNC_FS_THREADS`.
 //! - [`sync`] — async `Mutex`/`RwLock`/`Barrier`/`channel`.
 //! - [`stream`] — the [`futures_core`] `Stream` trait plus combinators.

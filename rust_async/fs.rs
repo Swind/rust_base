@@ -1,10 +1,12 @@
 //! Async filesystem access, mirroring `async_std::fs`.
 //!
-//! This is the most direct stage of all: `rust_io::FileProxy` is *already* the
-//! blocking-pool-offload model (it runs `pread`/`pwrite` on a thread pool and
-//! delivers the result via callback). We only add the Future façade — post the
-//! op onto the reactor's IO thread (where `FileProxy` requires to be called)
-//! and turn its result callback into a `Waker` wake-up via a one-shot channel.
+//! Regular files have no epoll readiness signal, so every operation is a
+//! blocking syscall offloaded to a thread pool, its result delivered back
+//! through a one-shot channel that wakes the awaiting task. [`File`] holds an
+//! open descriptor and a cursor and implements the `futures_io`
+//! `AsyncRead`/`AsyncWrite`/`AsyncSeek` traits (so it composes with
+//! [`io::BufReader`](crate::io::BufReader), [`io::copy`](crate::io::copy), …),
+//! alongside self-contained positional helpers.
 //!
 //! ## Sizing the blocking pool
 //!
@@ -22,17 +24,18 @@
 //! rust_async::fs::init_pool(16);
 //! ```
 
+use std::cmp::min;
 use std::future::Future;
-use std::io;
+use std::io::{self, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 
-use rust_io::FileProxy;
+use futures_io::{AsyncRead, AsyncSeek, AsyncWrite};
 use rust_task::{TaskRunner, TaskTraits, ThreadPool};
 
-use crate::reactor::io_runner;
 use crate::stream::{self, Stream};
 
 static FS_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
@@ -97,11 +100,10 @@ fn fs_runner() -> Arc<dyn TaskRunner> {
         .clone()
 }
 
-/// Run a blocking `std::fs` call on the filesystem pool and await its result.
-///
-/// Unlike [`File`]'s methods (which hop through the reactor IO thread because
-/// `FileProxy` requires it), these ops are self-contained, so we post straight
-/// onto the blocking pool.
+/// Run a blocking `std::fs`/`pread`/`pwrite` call on the filesystem pool and
+/// await its result via a one-shot channel. The shared primitive behind every
+/// operation in this module ([`File`]'s methods, the directory/metadata
+/// helpers, and the module-level functions).
 fn fs_blocking<T, F>(f: F) -> Oneshot<io::Result<T>>
 where
     T: Send + 'static,
@@ -157,76 +159,338 @@ fn oneshot<T>() -> (Setter<T>, Oneshot<T>) {
     (Setter { state: state.clone() }, Oneshot { state })
 }
 
+// ── OpenOptions ──────────────────────────────────────────────────────────────
+
+/// Builder for opening a [`File`] with specific flags, mirroring
+/// `async_std::fs::OpenOptions` (a thin async wrapper over
+/// [`std::fs::OpenOptions`]).
+#[derive(Clone, Debug)]
+pub struct OpenOptions(std::fs::OpenOptions);
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        OpenOptions::new()
+    }
+}
+
+impl OpenOptions {
+    /// A new set of options with every flag off.
+    pub fn new() -> OpenOptions {
+        OpenOptions(std::fs::OpenOptions::new())
+    }
+
+    /// Allow reading.
+    pub fn read(&mut self, read: bool) -> &mut Self {
+        self.0.read(read);
+        self
+    }
+
+    /// Allow writing.
+    pub fn write(&mut self, write: bool) -> &mut Self {
+        self.0.write(write);
+        self
+    }
+
+    /// Open in append mode (writes go to the end of the file).
+    pub fn append(&mut self, append: bool) -> &mut Self {
+        self.0.append(append);
+        self
+    }
+
+    /// Truncate the file to length 0 on open.
+    pub fn truncate(&mut self, truncate: bool) -> &mut Self {
+        self.0.truncate(truncate);
+        self
+    }
+
+    /// Create the file if it does not exist.
+    pub fn create(&mut self, create: bool) -> &mut Self {
+        self.0.create(create);
+        self
+    }
+
+    /// Create the file, failing if it already exists.
+    pub fn create_new(&mut self, create_new: bool) -> &mut Self {
+        self.0.create_new(create_new);
+        self
+    }
+
+    /// Open `path` with these options, off the executor.
+    pub async fn open(&self, path: impl Into<PathBuf>) -> io::Result<File> {
+        let opts = self.0.clone();
+        let path = path.into();
+        let file = fs_blocking(move || opts.open(&path)).await?;
+        Ok(File::from_std(file))
+    }
+}
+
 // ── File ────────────────────────────────────────────────────────────────────
 
-/// An async handle to a file path, backed by [`rust_io::FileProxy`].
+/// An async handle to an open file with a read/write cursor.
 ///
-/// Unlike `std`/`async-std`'s `File`, this does not hold an open descriptor or
-/// a cursor; each method performs a self-contained positional or whole-file
-/// operation (matching `FileProxy`). A cursor-based `AsyncRead`/`AsyncWrite`
-/// `File` is left as future surface area.
-#[derive(Clone)]
+/// Implements the `futures_io` `AsyncRead`/`AsyncWrite`/`AsyncSeek` traits (so
+/// it plugs into [`io::BufReader`](crate::io::BufReader),
+/// [`io::copy`](crate::io::copy), and the rest of the ecosystem), and also
+/// offers self-contained positional helpers ([`read_at`](File::read_at),
+/// [`write_at`](File::write_at), [`append`](File::append)) that ignore the
+/// cursor. Each operation is a blocking `pread`/`pwrite` offloaded to the
+/// configurable filesystem pool.
+///
+/// Not `Clone`: a `File` owns its cursor (like [`std::fs::File`]).
 pub struct File {
-    proxy: Arc<FileProxy>,
+    file: Arc<std::fs::File>,
+    pos: u64,
+    read_busy: Option<Oneshot<io::Result<Vec<u8>>>>,
+    read_leftover: Vec<u8>,
+    write_busy: Option<Oneshot<io::Result<usize>>>,
+    seek_busy: Option<Oneshot<io::Result<u64>>>,
 }
 
 impl File {
-    /// Create a handle for `path`. Cheap; no I/O happens until a method is
-    /// awaited.
-    pub fn open(path: impl Into<PathBuf>) -> File {
-        File { proxy: Arc::new(FileProxy::new(path.into(), fs_pool())) }
+    fn from_std(file: std::fs::File) -> File {
+        File {
+            file: Arc::new(file),
+            pos: 0,
+            read_busy: None,
+            read_leftover: Vec::new(),
+            write_busy: None,
+            seek_busy: None,
+        }
     }
 
-    /// Run a `FileProxy` op on the IO thread, awaiting its callback result.
-    async fn run<T, F>(&self, op: F) -> io::Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&FileProxy, Box<dyn FnOnce(io::Result<T>) + Send + 'static>) + Send + 'static,
-    {
-        let proxy = self.proxy.clone();
-        let (setter, fut) = oneshot::<io::Result<T>>();
-        io_runner().post_task(Box::new(move || {
-            op(&proxy, Box::new(move |res| setter.set(res)));
-        }));
-        fut.await
+    /// Open `path` read-only.
+    pub async fn open(path: impl Into<PathBuf>) -> io::Result<File> {
+        let path = path.into();
+        let file = fs_blocking(move || std::fs::File::open(&path)).await?;
+        Ok(File::from_std(file))
     }
 
-    /// Read the entire file.
+    /// Create (or truncate) `path` for writing.
+    pub async fn create(path: impl Into<PathBuf>) -> io::Result<File> {
+        let path = path.into();
+        let file = fs_blocking(move || std::fs::File::create(&path)).await?;
+        Ok(File::from_std(file))
+    }
+
+    /// Metadata for the open file.
+    pub async fn metadata(&self) -> io::Result<Metadata> {
+        let file = self.file.clone();
+        fs_blocking(move || file.metadata().map(Metadata)).await
+    }
+
+    /// Truncate or extend the file to `size` bytes.
+    pub async fn set_len(&self, size: u64) -> io::Result<()> {
+        let file = self.file.clone();
+        fs_blocking(move || file.set_len(size)).await
+    }
+
+    /// Flush OS buffers for this file to disk.
+    pub async fn sync_all(&self) -> io::Result<()> {
+        let file = self.file.clone();
+        fs_blocking(move || file.sync_all()).await
+    }
+
+    /// Read the entire file (from byte 0; does not move the cursor).
     pub async fn read_all(&self) -> io::Result<Vec<u8>> {
-        self.run(|p, cb| p.read_all(cb)).await
+        let file = self.file.clone();
+        fs_blocking(move || {
+            let len = file.metadata()?.len() as usize;
+            let mut buf = vec![0u8; len];
+            let n = file.read_at(&mut buf, 0)?;
+            buf.truncate(n);
+            Ok(buf)
+        })
+        .await
     }
 
-    /// Read `len` bytes starting at `offset`.
+    /// Read up to `len` bytes starting at `offset` (does not move the cursor).
     pub async fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        self.run(move |p, cb| p.read(offset, len, cb)).await
+        let file = self.file.clone();
+        fs_blocking(move || {
+            let mut buf = vec![0u8; len];
+            let n = file.read_at(&mut buf, offset)?;
+            buf.truncate(n);
+            Ok(buf)
+        })
+        .await
     }
 
-    /// Create or truncate the file and write `data` from byte 0.
-    pub async fn write_all(&self, data: Vec<u8>) -> io::Result<()> {
-        self.run(move |p, cb| p.write_all(data, cb)).await
-    }
-
-    /// Write `data` at `offset` without truncating the rest of the file.
+    /// Write `data` at `offset` without truncating the rest of the file
+    /// (does not move the cursor).
     pub async fn write_at(&self, offset: u64, data: Vec<u8>) -> io::Result<usize> {
-        self.run(move |p, cb| p.write(offset, data, cb)).await
+        let file = self.file.clone();
+        let n = data.len();
+        fs_blocking(move || file.write_all_at(&data, offset).map(|()| n)).await
     }
 
-    /// Append `data` to the end of the file.
+    /// Append `data` to the end of the file (does not move the cursor).
     pub async fn append(&self, data: Vec<u8>) -> io::Result<usize> {
-        self.run(move |p, cb| p.append(data, cb)).await
+        let file = self.file.clone();
+        let n = data.len();
+        fs_blocking(move || {
+            let end = file.metadata()?.len();
+            file.write_all_at(&data, end).map(|()| n)
+        })
+        .await
     }
+}
+
+impl AsyncRead for File {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        loop {
+            if !this.read_leftover.is_empty() {
+                let n = min(buf.len(), this.read_leftover.len());
+                buf[..n].copy_from_slice(&this.read_leftover[..n]);
+                this.read_leftover.drain(..n);
+                return Poll::Ready(Ok(n));
+            }
+            match this.read_busy.take() {
+                Some(mut job) => match Pin::new(&mut job).poll(cx) {
+                    Poll::Pending => {
+                        this.read_busy = Some(job);
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(res) => {
+                        let bytes = res?;
+                        if bytes.is_empty() {
+                            return Poll::Ready(Ok(0)); // EOF
+                        }
+                        this.pos += bytes.len() as u64;
+                        this.read_leftover = bytes;
+                    }
+                },
+                None => {
+                    let file = this.file.clone();
+                    let pos = this.pos;
+                    let len = buf.len().max(1);
+                    this.read_busy = Some(fs_blocking(move || {
+                        let mut v = vec![0u8; len];
+                        let n = file.read_at(&mut v, pos)?;
+                        v.truncate(n);
+                        Ok(v)
+                    }));
+                }
+            }
+        }
+    }
+}
+
+impl AsyncWrite for File {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        loop {
+            match this.write_busy.take() {
+                Some(mut job) => match Pin::new(&mut job).poll(cx) {
+                    Poll::Pending => {
+                        this.write_busy = Some(job);
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(res) => {
+                        let n = res?;
+                        this.pos += n as u64;
+                        return Poll::Ready(Ok(n));
+                    }
+                },
+                None => {
+                    let file = this.file.clone();
+                    let pos = this.pos;
+                    let data = buf.to_vec();
+                    let n = data.len();
+                    this.write_busy =
+                        Some(fs_blocking(move || file.write_all_at(&data, pos).map(|()| n)));
+                }
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Writes go straight to the fd via pwrite; nothing is buffered here.
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // The fd is closed when the last Arc to it is dropped.
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncSeek for File {
+    fn poll_seek(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        pos: SeekFrom,
+    ) -> Poll<io::Result<u64>> {
+        let this = self.get_mut();
+        loop {
+            if let Some(mut job) = this.seek_busy.take() {
+                match Pin::new(&mut job).poll(cx) {
+                    Poll::Pending => {
+                        this.seek_busy = Some(job);
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(res) => {
+                        let new_pos = res?;
+                        this.pos = new_pos;
+                        this.read_leftover.clear();
+                        return Poll::Ready(Ok(new_pos));
+                    }
+                }
+            }
+            match pos {
+                SeekFrom::Start(n) => {
+                    this.pos = n;
+                    this.read_leftover.clear();
+                    return Poll::Ready(Ok(n));
+                }
+                SeekFrom::Current(delta) => {
+                    let new_pos = this.pos.checked_add_signed(delta).ok_or_else(invalid_seek)?;
+                    this.pos = new_pos;
+                    this.read_leftover.clear();
+                    return Poll::Ready(Ok(new_pos));
+                }
+                SeekFrom::End(delta) => {
+                    let file = this.file.clone();
+                    this.seek_busy = Some(fs_blocking(move || {
+                        let len = file.metadata()?.len();
+                        len.checked_add_signed(delta).ok_or_else(invalid_seek)
+                    }));
+                    // Loop to poll the freshly-armed job and register the
+                    // waker.
+                }
+            }
+        }
+    }
+}
+
+fn invalid_seek() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "invalid seek to a negative or overflowing position",
+    )
 }
 
 // ── module-level convenience (à la async_std::fs::{read, write}) ────────────
 
 /// Read the whole contents of a file.
 pub async fn read(path: impl Into<PathBuf>) -> io::Result<Vec<u8>> {
-    File::open(path).read_all().await
+    File::open(path).await?.read_all().await
 }
 
 /// Write a slice as the entire contents of a file, creating/truncating it.
 pub async fn write(path: impl Into<PathBuf>, data: Vec<u8>) -> io::Result<()> {
-    File::open(path).write_all(data).await
+    use futures_util::io::AsyncWriteExt;
+    let mut file = File::create(path).await?;
+    file.write_all(&data).await?;
+    file.flush().await
 }
 
 // ── directory operations (à la async_std::fs) ───────────────────────────────
