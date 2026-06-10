@@ -193,9 +193,8 @@ What it covers:
 The runtime topology (a single fused lane, a parallel pool, or thread-per-core) is
 a choice of two arguments to `Runtime`, not a separate module.
 
-→ See the [`rust_async/examples/`](rust_async/examples/) directory (`file_pipeline`,
-`unix_echo`, `http_get`, `pipeline_sync`, `tick_and_timeout`, …) and the crate-level
-docs (`cargo doc -p rust_async --open`) for the full surface.
+→ See [`rust_async/README.md`](rust_async/README.md) for the full API, the two
+I/O paths (epoll readiness vs. blocking offload), and the `examples/` directory.
 
 ---
 
