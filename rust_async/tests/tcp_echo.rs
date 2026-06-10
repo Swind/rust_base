@@ -237,3 +237,30 @@ fn udp_send_recv() {
 
     assert_eq!(got, b"datagram");
 }
+
+/// Proves `TcpListener::incoming()` yields connections as a `Stream`, and that
+/// the new `set_nodelay`/`local_addr` conveniences work on an accepted stream.
+#[test]
+fn incoming_stream_accepts_connections() {
+    use rust_async::stream::StreamExt;
+
+    let listener = AsyncTcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = thread::spawn(move || {
+        let mut sock = std::net::TcpStream::connect(addr).unwrap();
+        sock.write_all(b"hi").unwrap();
+    });
+
+    let got = block_on(async move {
+        let conn = listener.incoming().next().await.unwrap().unwrap();
+        conn.set_nodelay(true).unwrap();
+        assert!(conn.local_addr().is_ok());
+        let mut buf = [0u8; 8];
+        let n = conn.read(&mut buf).await.unwrap();
+        buf[..n].to_vec()
+    });
+
+    assert_eq!(got, b"hi");
+    client.join().unwrap();
+}

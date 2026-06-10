@@ -103,7 +103,7 @@ pub mod prelude {
 pub use block_on::block_on;
 pub use executor::{JoinHandle, spawn};
 pub use local::LocalKey;
-pub use net::{Async, TcpListener, UdpSocket};
+pub use net::{Async, Incoming, TcpListener, TcpStream, UdpSocket};
 pub use runtime::Runtime;
 pub use task_impl::{
     Offload, Timeout, TimeoutError, Timer, YieldNow, offload, sleep, spawn_blocking, timeout,

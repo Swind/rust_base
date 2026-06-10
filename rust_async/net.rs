@@ -8,12 +8,13 @@
 
 use std::future::Future;
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream as StdTcpStream};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
+use futures_core::Stream;
 use futures_io::{AsyncRead, AsyncWrite};
 
 use crate::reactor::Source;
@@ -45,7 +46,7 @@ impl Future for Writable<'_> {
 // ── TCP stream ──────────────────────────────────────────────────────────────
 
 struct Inner {
-    io: TcpStream,
+    io: StdTcpStream,
     source: Arc<Source>,
 }
 
@@ -64,10 +65,14 @@ pub struct Async {
     inner: Arc<Inner>,
 }
 
+/// Alias matching `async_std::net::TcpStream`. [`Async`] *is* the async TCP
+/// stream; this name is provided for familiarity.
+pub type TcpStream = Async;
+
 impl Async {
     /// Wrap an existing stream, setting it non-blocking and registering its fd
     /// with the reactor.
-    pub fn new(io: TcpStream) -> io::Result<Self> {
+    pub fn new(io: StdTcpStream) -> io::Result<Self> {
         io.set_nonblocking(true)?;
         let source = Source::new(io.as_raw_fd());
         Ok(Self { inner: Arc::new(Inner { io, source }) })
@@ -90,7 +95,37 @@ impl Async {
         self.io().peer_addr()
     }
 
-    fn io(&self) -> &TcpStream {
+    /// The local address this connection is bound to.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.io().local_addr()
+    }
+
+    /// Get the value of the `TCP_NODELAY` option (Nagle's algorithm disabled).
+    pub fn nodelay(&self) -> io::Result<bool> {
+        self.io().nodelay()
+    }
+
+    /// Set the `TCP_NODELAY` option.
+    pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        self.io().set_nodelay(nodelay)
+    }
+
+    /// Get the IP time-to-live for this socket.
+    pub fn ttl(&self) -> io::Result<u32> {
+        self.io().ttl()
+    }
+
+    /// Set the IP time-to-live for this socket.
+    pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
+        self.io().set_ttl(ttl)
+    }
+
+    /// Shut down the read half, write half, or both of this connection.
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.io().shutdown(how)
+    }
+
+    fn io(&self) -> &StdTcpStream {
         &self.inner.io
     }
 
@@ -191,7 +226,7 @@ impl AsyncWrite for &Async {
 
     fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this: &Async = self.get_mut();
-        Poll::Ready(this.io().shutdown(std::net::Shutdown::Write))
+        Poll::Ready(this.io().shutdown(Shutdown::Write))
     }
 }
 
@@ -264,6 +299,37 @@ impl TcpListener {
             }
         }
     }
+
+    /// A stream that yields connections as they arrive, mirroring
+    /// `async_std::net::TcpListener::incoming`.
+    pub fn incoming(&self) -> Incoming<'_> {
+        Incoming { listener: self }
+    }
+}
+
+/// Stream of incoming connections, returned by [`TcpListener::incoming`].
+///
+/// Yields each accepted [`Async`] (dropping the peer address); the stream never
+/// ends on its own.
+pub struct Incoming<'a> {
+    listener: &'a TcpListener,
+}
+
+impl Stream for Incoming<'_> {
+    type Item = io::Result<Async>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let listener = self.listener;
+        loop {
+            match listener.io.accept() {
+                Ok((stream, _addr)) => return Poll::Ready(Some(Async::new(stream))),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    ready!(listener.source.poll_readable(cx));
+                }
+                Err(e) => return Poll::Ready(Some(Err(e))),
+            }
+        }
+    }
 }
 
 // ── UDP socket ──────────────────────────────────────────────────────────────
@@ -291,6 +357,54 @@ impl UdpSocket {
     /// Set the default peer for [`send`](Self::send)/[`recv`](Self::recv).
     pub fn connect(&self, addr: SocketAddr) -> io::Result<()> {
         self.io.connect(addr)
+    }
+
+    /// Get the value of the `SO_BROADCAST` option.
+    pub fn broadcast(&self) -> io::Result<bool> {
+        self.io.broadcast()
+    }
+
+    /// Set the `SO_BROADCAST` option (allow sending to the broadcast address).
+    pub fn set_broadcast(&self, on: bool) -> io::Result<()> {
+        self.io.set_broadcast(on)
+    }
+
+    /// Get the IP time-to-live for this socket.
+    pub fn ttl(&self) -> io::Result<u32> {
+        self.io.ttl()
+    }
+
+    /// Set the IP time-to-live for this socket.
+    pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
+        self.io.set_ttl(ttl)
+    }
+
+    /// Get the `IP_MULTICAST_LOOP` option for IPv4.
+    pub fn multicast_loop_v4(&self) -> io::Result<bool> {
+        self.io.multicast_loop_v4()
+    }
+
+    /// Set the `IP_MULTICAST_LOOP` option for IPv4.
+    pub fn set_multicast_loop_v4(&self, on: bool) -> io::Result<()> {
+        self.io.set_multicast_loop_v4(on)
+    }
+
+    /// Join the multicast group at `multiaddr` on the interface `interface`.
+    pub fn join_multicast_v4(
+        &self,
+        multiaddr: std::net::Ipv4Addr,
+        interface: std::net::Ipv4Addr,
+    ) -> io::Result<()> {
+        self.io.join_multicast_v4(&multiaddr, &interface)
+    }
+
+    /// Leave the multicast group at `multiaddr` on the interface `interface`.
+    pub fn leave_multicast_v4(
+        &self,
+        multiaddr: std::net::Ipv4Addr,
+        interface: std::net::Ipv4Addr,
+    ) -> io::Result<()> {
+        self.io.leave_multicast_v4(&multiaddr, &interface)
     }
 
     fn readable(&self) -> Readable<'_> {
@@ -348,7 +462,7 @@ impl UdpSocket {
 
 // ── raw non-blocking connect helpers (no socket2 dependency) ────────────────
 
-fn start_connect(addr: SocketAddr) -> io::Result<TcpStream> {
+fn start_connect(addr: SocketAddr) -> io::Result<StdTcpStream> {
     let domain = match addr {
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
@@ -361,7 +475,7 @@ fn start_connect(addr: SocketAddr) -> io::Result<TcpStream> {
         return Err(io::Error::last_os_error());
     }
     // Own the fd immediately so it's closed on any early return.
-    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+    let stream = unsafe { StdTcpStream::from_raw_fd(fd) };
 
     let rc = match addr {
         SocketAddr::V4(v4) => {
