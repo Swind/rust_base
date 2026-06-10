@@ -38,3 +38,31 @@ path = "examples/http_server.rs"
 [[example]]
 name = "http_server_multicore"
 path = "examples/http_server_multicore.rs"
+
+[[example]]
+name = "file_pipeline"
+path = "examples/file_pipeline.rs"
+
+[[example]]
+name = "async_cat"
+path = "examples/async_cat.rs"
+
+[[example]]
+name = "unix_echo"
+path = "examples/unix_echo.rs"
+
+[[example]]
+name = "http_get"
+path = "examples/http_get.rs"
+
+[[example]]
+name = "pipeline_sync"
+path = "examples/pipeline_sync.rs"
+
+[[example]]
+name = "tick_and_timeout"
+path = "examples/tick_and_timeout.rs"
+
+[[example]]
+name = "udp_chat"
+path = "examples/udp_chat.rs"
