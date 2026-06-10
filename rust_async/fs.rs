@@ -30,9 +30,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 
 use rust_io::FileProxy;
-use rust_task::{TaskRunner, ThreadPool};
+use rust_task::{TaskRunner, TaskTraits, ThreadPool};
 
 use crate::reactor::io_runner;
+use crate::stream::{self, Stream};
 
 static FS_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
@@ -83,6 +84,32 @@ fn parse_fs_threads(raw: Option<String>) -> usize {
 
 fn fs_pool() -> Arc<ThreadPool> {
     FS_POOL.get_or_init(|| ThreadPool::new(configured_fs_threads())).clone()
+}
+
+/// A parallel `TaskRunner` over [`fs_pool`] for standalone blocking filesystem
+/// calls (directory/metadata ops) that have no per-path ordering requirement.
+fn fs_runner() -> Arc<dyn TaskRunner> {
+    static FS_RUNNER: OnceLock<Arc<dyn TaskRunner>> = OnceLock::new();
+    FS_RUNNER
+        .get_or_init(|| {
+            fs_pool().create_task_runner(TaskTraits { may_block: true, ..TaskTraits::default() })
+        })
+        .clone()
+}
+
+/// Run a blocking `std::fs` call on the filesystem pool and await its result.
+///
+/// Unlike [`File`]'s methods (which hop through the reactor IO thread because
+/// `FileProxy` requires it), these ops are self-contained, so we post straight
+/// onto the blocking pool.
+fn fs_blocking<T, F>(f: F) -> Oneshot<io::Result<T>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    let (setter, fut) = oneshot::<io::Result<T>>();
+    fs_runner().post_task(Box::new(move || setter.set(f())));
+    fut
 }
 
 // ── one-shot result channel (callback → Future) ─────────────────────────────
@@ -200,6 +227,200 @@ pub async fn read(path: impl Into<PathBuf>) -> io::Result<Vec<u8>> {
 /// Write a slice as the entire contents of a file, creating/truncating it.
 pub async fn write(path: impl Into<PathBuf>, data: Vec<u8>) -> io::Result<()> {
     File::open(path).write_all(data).await
+}
+
+// ── directory operations (à la async_std::fs) ───────────────────────────────
+
+/// Create a directory.
+pub async fn create_dir(path: impl Into<PathBuf>) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::create_dir(&path)).await
+}
+
+/// Recursively create a directory and all of its missing parents.
+pub async fn create_dir_all(path: impl Into<PathBuf>) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::create_dir_all(&path)).await
+}
+
+/// Remove an empty directory.
+pub async fn remove_dir(path: impl Into<PathBuf>) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::remove_dir(&path)).await
+}
+
+/// Remove a directory and all of its contents.
+pub async fn remove_dir_all(path: impl Into<PathBuf>) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::remove_dir_all(&path)).await
+}
+
+/// Remove a file.
+pub async fn remove_file(path: impl Into<PathBuf>) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::remove_file(&path)).await
+}
+
+/// Rename (move) `from` to `to`, replacing `to` if it exists.
+pub async fn rename(from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> io::Result<()> {
+    let (from, to) = (from.into(), to.into());
+    fs_blocking(move || std::fs::rename(&from, &to)).await
+}
+
+/// Copy the contents of `from` to `to`, returning the number of bytes copied.
+pub async fn copy(from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> io::Result<u64> {
+    let (from, to) = (from.into(), to.into());
+    fs_blocking(move || std::fs::copy(&from, &to)).await
+}
+
+/// Create a hard link `link` pointing at `original`.
+pub async fn hard_link(original: impl Into<PathBuf>, link: impl Into<PathBuf>) -> io::Result<()> {
+    let (original, link) = (original.into(), link.into());
+    fs_blocking(move || std::fs::hard_link(&original, &link)).await
+}
+
+/// Canonicalize a path, resolving symlinks and `.`/`..` components.
+pub async fn canonicalize(path: impl Into<PathBuf>) -> io::Result<PathBuf> {
+    let path = path.into();
+    fs_blocking(move || std::fs::canonicalize(&path)).await
+}
+
+/// Read the target of a symbolic link.
+pub async fn read_link(path: impl Into<PathBuf>) -> io::Result<PathBuf> {
+    let path = path.into();
+    fs_blocking(move || std::fs::read_link(&path)).await
+}
+
+// ── metadata (à la async_std::fs) ───────────────────────────────────────────
+
+/// Re-exported from `std::fs`; describes a file's type (file/dir/symlink).
+pub use std::fs::FileType;
+/// Re-exported from `std::fs`; a file's read-only/permission bits.
+pub use std::fs::Permissions;
+
+/// Metadata for a filesystem entry, wrapping [`std::fs::Metadata`].
+///
+/// All accessors are synchronous (the underlying `stat` already happened when
+/// the `Metadata` was fetched); only fetching it is async.
+#[derive(Clone)]
+pub struct Metadata(std::fs::Metadata);
+
+impl Metadata {
+    /// The file type (file, directory, or symlink).
+    pub fn file_type(&self) -> FileType {
+        self.0.file_type()
+    }
+
+    /// `true` if this is a directory.
+    pub fn is_dir(&self) -> bool {
+        self.0.is_dir()
+    }
+
+    /// `true` if this is a regular file.
+    pub fn is_file(&self) -> bool {
+        self.0.is_file()
+    }
+
+    /// `true` if this is a symbolic link (only meaningful via
+    /// [`symlink_metadata`]).
+    pub fn is_symlink(&self) -> bool {
+        self.0.is_symlink()
+    }
+
+    /// File size in bytes.
+    pub fn len(&self) -> u64 {
+        self.0.len()
+    }
+
+    /// `true` if the file has zero length.
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
+
+    /// The permission bits.
+    pub fn permissions(&self) -> Permissions {
+        self.0.permissions()
+    }
+
+    /// Last modification time, if the platform supports it.
+    pub fn modified(&self) -> io::Result<std::time::SystemTime> {
+        self.0.modified()
+    }
+
+    /// Last access time, if the platform supports it.
+    pub fn accessed(&self) -> io::Result<std::time::SystemTime> {
+        self.0.accessed()
+    }
+
+    /// Creation time, if the platform supports it.
+    pub fn created(&self) -> io::Result<std::time::SystemTime> {
+        self.0.created()
+    }
+}
+
+/// Metadata for `path`, following symlinks.
+pub async fn metadata(path: impl Into<PathBuf>) -> io::Result<Metadata> {
+    let path = path.into();
+    fs_blocking(move || std::fs::metadata(&path).map(Metadata)).await
+}
+
+/// Metadata for `path` *without* following symlinks.
+pub async fn symlink_metadata(path: impl Into<PathBuf>) -> io::Result<Metadata> {
+    let path = path.into();
+    fs_blocking(move || std::fs::symlink_metadata(&path).map(Metadata)).await
+}
+
+/// Change the permissions of `path`.
+pub async fn set_permissions(path: impl Into<PathBuf>, perm: Permissions) -> io::Result<()> {
+    let path = path.into();
+    fs_blocking(move || std::fs::set_permissions(&path, perm.clone())).await
+}
+
+// ── directory listing (à la async_std::fs::read_dir) ─────────────────────────
+
+/// A single entry yielded by [`read_dir`], wrapping [`std::fs::DirEntry`].
+pub struct DirEntry(std::fs::DirEntry);
+
+impl DirEntry {
+    /// The full path to this entry.
+    pub fn path(&self) -> PathBuf {
+        self.0.path()
+    }
+
+    /// The bare file name of this entry.
+    pub fn file_name(&self) -> std::ffi::OsString {
+        self.0.file_name()
+    }
+
+    /// Metadata for this entry (does not follow symlinks).
+    pub async fn metadata(&self) -> io::Result<Metadata> {
+        symlink_metadata(self.0.path()).await
+    }
+
+    /// The file type of this entry.
+    pub async fn file_type(&self) -> io::Result<FileType> {
+        Ok(self.metadata().await?.file_type())
+    }
+}
+
+/// Return a stream over the entries of the directory at `path`.
+///
+/// Unlike `async_std`'s lazily-streamed `ReadDir`, this eagerly reads the whole
+/// directory on the blocking pool, then streams the collected entries. For very
+/// large directories that trades memory for simplicity.
+pub async fn read_dir(
+    path: impl Into<PathBuf>,
+) -> io::Result<impl Stream<Item = io::Result<DirEntry>>> {
+    let path = path.into();
+    let entries = fs_blocking(move || {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&path)? {
+            out.push(entry.map(DirEntry));
+        }
+        Ok(out)
+    })
+    .await?;
+    Ok(stream::from_iter(entries))
 }
 
 #[cfg(test)]
