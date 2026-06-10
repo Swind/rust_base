@@ -43,6 +43,8 @@
 //!   ([`fs::create_dir_all`], [`fs::read_dir`], [`fs::metadata`], …); the
 //!   blocking pool size is configurable via [`fs::init_pool`] or
 //!   `RUST_ASYNC_FS_THREADS`.
+//! - [`os::unix::net`] — async Unix-domain `UnixStream`/`UnixListener`/
+//!   `UnixDatagram` (same reactor readiness path as [`net`]).
 //! - [`sync`] — async `Mutex`/`RwLock`/`Condvar`/`Barrier`/`channel`.
 //! - [`stream`] — the [`futures_core`] `Stream` trait plus combinators.
 //! - [`prelude`] — the traits you usually want in scope.
@@ -88,6 +90,15 @@ pub mod task {
 }
 
 pub mod io;
+
+/// OS-specific functionality, mirroring `async_std::os`.
+pub mod os {
+    /// Unix-specific functionality, mirroring `async_std::os::unix`.
+    pub mod unix {
+        /// Async Unix-domain sockets, mirroring `async_std::os::unix::net`.
+        pub mod net;
+    }
+}
 
 /// The traits you usually want in scope, mirroring `async_std::prelude`.
 pub mod prelude {
