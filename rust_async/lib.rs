@@ -43,7 +43,7 @@
 //!   ([`fs::create_dir_all`], [`fs::read_dir`], [`fs::metadata`], …); the
 //!   blocking pool size is configurable via [`fs::init_pool`] or
 //!   `RUST_ASYNC_FS_THREADS`.
-//! - [`sync`] — async `Mutex`/`RwLock`/`Barrier`/`channel`.
+//! - [`sync`] — async `Mutex`/`RwLock`/`Condvar`/`Barrier`/`channel`.
 //! - [`stream`] — the [`futures_core`] `Stream` trait plus combinators.
 //! - [`prelude`] — the traits you usually want in scope.
 //!

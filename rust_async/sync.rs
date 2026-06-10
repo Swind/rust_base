@@ -64,6 +64,16 @@ impl Waiters {
             w.wake();
         }
     }
+
+    /// Wake (and drop) the longest-waiting parked waker, if any.
+    fn wake_one(&mut self) {
+        let next_key = self.map.keys().next().copied();
+        if let Some(key) = next_key
+            && let Some(w) = self.map.remove(&key)
+        {
+            w.wake();
+        }
+    }
 }
 
 // ── Mutex ─────────────────────────────────────────────────────────────────
@@ -561,6 +571,112 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         if self.id.is_some() {
             self.chan.lock().unwrap().recv_waiters.unpark(self.id);
+        }
+    }
+}
+
+// ── Condvar ───────────────────────────────────────────────────────────────
+
+/// An async condition variable, mirroring `async_std::sync::Condvar`.
+///
+/// Pairs with [`Mutex`]: [`wait`](Condvar::wait) atomically releases a held
+/// [`MutexGuard`] and suspends until another task calls
+/// [`notify_one`](Condvar::notify_one) / [`notify_all`](Condvar::notify_all),
+/// then re-acquires the mutex before resolving. As with `std`, wake-ups may be
+/// spurious — re-check your condition in a loop (or use
+/// [`wait_until`](Condvar::wait_until)).
+#[derive(Default)]
+pub struct Condvar {
+    waiters: StdMutex<Waiters>,
+}
+
+impl Condvar {
+    /// Create a new condition variable.
+    pub fn new() -> Condvar {
+        Condvar { waiters: StdMutex::new(Waiters::default()) }
+    }
+
+    /// Release `guard` and wait until notified, then re-acquire the mutex.
+    pub fn wait<'a, T: ?Sized>(&self, guard: MutexGuard<'a, T>) -> CondvarWait<'a, '_, T> {
+        let mutex = guard.mutex;
+        CondvarWait { condvar: self, mutex, id: None, state: WaitState::Init(guard) }
+    }
+
+    /// Wait until `condition` returns `true`, coping with spurious wake-ups.
+    pub async fn wait_until<'a, T, F>(
+        &self,
+        mut guard: MutexGuard<'a, T>,
+        mut condition: F,
+    ) -> MutexGuard<'a, T>
+    where
+        T: ?Sized,
+        F: FnMut(&mut T) -> bool,
+    {
+        while !condition(&mut guard) {
+            guard = self.wait(guard).await;
+        }
+        guard
+    }
+
+    /// Wake one waiting task (the longest-waiting).
+    pub fn notify_one(&self) {
+        self.waiters.lock().unwrap().wake_one();
+    }
+
+    /// Wake all waiting tasks.
+    pub fn notify_all(&self) {
+        self.waiters.lock().unwrap().wake_all();
+    }
+}
+
+enum WaitState<'a, T: ?Sized> {
+    /// Holding the guard; on first poll we park and release it.
+    Init(MutexGuard<'a, T>),
+    /// Parked, waiting for a notification.
+    Waiting,
+    /// Notified; re-acquiring the mutex.
+    Relocking(Lock<'a, T>),
+}
+
+/// Future returned by [`Condvar::wait`].
+pub struct CondvarWait<'a, 'c, T: ?Sized> {
+    condvar: &'c Condvar,
+    mutex: &'a Mutex<T>,
+    id: Option<usize>,
+    state: WaitState<'a, T>,
+}
+
+impl<'a, T: ?Sized> Future for CondvarWait<'a, '_, T> {
+    type Output = MutexGuard<'a, T>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        loop {
+            match &mut this.state {
+                WaitState::Init(_) => {
+                    // Park our waker before releasing the mutex, so a notifier
+                    // holding the mutex cannot slip a wake-up in between.
+                    this.condvar.waiters.lock().unwrap().park(&mut this.id, cx.waker());
+                    // Replacing the state drops the held guard, releasing the lock.
+                    this.state = WaitState::Waiting;
+                    return Poll::Pending;
+                }
+                WaitState::Waiting => {
+                    this.condvar.waiters.lock().unwrap().unpark(this.id.take());
+                    this.state = WaitState::Relocking(this.mutex.lock());
+                }
+                WaitState::Relocking(lock) => {
+                    let guard = std::task::ready!(Pin::new(lock).poll(cx));
+                    return Poll::Ready(guard);
+                }
+            }
+        }
+    }
+}
+
+impl<T: ?Sized> Drop for CondvarWait<'_, '_, T> {
+    fn drop(&mut self) {
+        if matches!(self.state, WaitState::Waiting) {
+            self.condvar.waiters.lock().unwrap().unpark(self.id);
         }
     }
 }

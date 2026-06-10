@@ -131,3 +131,57 @@ fn channel_send_after_receivers_gone_fails() {
         assert!(tx.send(1).is_err());
     });
 }
+
+#[test]
+fn condvar_notifies_waiter() {
+    use rust_async::sync::Condvar;
+
+    block_on(async {
+        let pair = Arc::new((Mutex::new(false), Condvar::new()));
+        let pair2 = Arc::clone(&pair);
+
+        let waiter = spawn(async move {
+            let (lock, cvar) = &*pair2;
+            let mut ready = lock.lock().await;
+            while !*ready {
+                ready = cvar.wait(ready).await;
+            }
+            true
+        });
+
+        // Set the flag and notify.
+        let (lock, cvar) = &*pair;
+        {
+            let mut ready = lock.lock().await;
+            *ready = true;
+        }
+        cvar.notify_one();
+
+        assert!(waiter.await);
+    });
+}
+
+#[test]
+fn condvar_wait_until_helper() {
+    use rust_async::sync::Condvar;
+
+    block_on(async {
+        let pair = Arc::new((Mutex::new(0u32), Condvar::new()));
+        let pair2 = Arc::clone(&pair);
+
+        let waiter = spawn(async move {
+            let (lock, cvar) = &*pair2;
+            let guard = lock.lock().await;
+            let guard = cvar.wait_until(guard, |n| *n >= 3).await;
+            *guard
+        });
+
+        let (lock, cvar) = &*pair;
+        for _ in 0..3 {
+            *lock.lock().await += 1;
+            cvar.notify_all();
+        }
+
+        assert_eq!(waiter.await, 3);
+    });
+}
