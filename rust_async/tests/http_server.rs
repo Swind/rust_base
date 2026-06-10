@@ -42,7 +42,7 @@ async fn handle_conn(mut stream: Async) -> io::Result<()> {
 fn single_lane_serves_many_concurrent_connections() {
     // Bind on the test thread so the listening socket exists (and we know its
     // port) before the server loop starts.
-    let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
 
     // The entire server runs on one fused lane (executor == reactor).

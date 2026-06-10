@@ -75,7 +75,7 @@ fn futures_io_combinators_interop() {
 #[test]
 fn tcp_listener_accept() {
     let echoed = block_on(async {
-        let listener = AsyncTcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
         let server = spawn(async move {
@@ -98,7 +98,7 @@ fn tcp_listener_accept() {
 /// IPv6 loopback connect + echo, proving the V6 path in `start_connect`.
 #[test]
 fn ipv6_connect_echo() {
-    let listener = AsyncTcpListener::bind("[::1]:0".parse().unwrap()).unwrap();
+    let listener = AsyncTcpListener::bind("[::1]:0").unwrap();
     let addr = listener.local_addr().unwrap();
 
     let echoed = block_on(async move {
@@ -122,7 +122,7 @@ fn ipv6_connect_echo() {
 /// reactor's read+write-at-once path on a single fd.
 #[test]
 fn cloned_stream_concurrent_read_write() {
-    let listener = AsyncTcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
 
     let got = block_on(async move {
@@ -220,9 +220,9 @@ fn cloned_stream_full_duplex_stress() {
 #[test]
 fn udp_send_recv() {
     let got = block_on(async {
-        let server = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
         let server_addr = server.local_addr().unwrap();
-        let client = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
 
         client.send_to(b"datagram", server_addr).await.unwrap();
 
@@ -244,7 +244,7 @@ fn udp_send_recv() {
 fn incoming_stream_accepts_connections() {
     use rust_async::stream::StreamExt;
 
-    let listener = AsyncTcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
 
     let client = thread::spawn(move || {
@@ -263,4 +263,29 @@ fn incoming_stream_accepts_connections() {
 
     assert_eq!(got, b"hi");
     client.join().unwrap();
+}
+
+/// Proves `connect` resolves a `"host:port"` string off the executor and that
+/// `bind` accepts a `&str`, mirroring `std`/`async-std` ToSocketAddrs
+/// ergonomics.
+#[test]
+fn connect_and_bind_accept_str_addrs() {
+    let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = thread::spawn(move || {
+        let (conn, _) = block_on(listener.accept()).unwrap();
+        block_on(async move {
+            let mut buf = [0u8; 8];
+            let n = conn.read(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"yo");
+        });
+    });
+
+    block_on(async move {
+        let conn = Async::connect(format!("localhost:{port}")).await.unwrap();
+        conn.write_all(b"yo").await.unwrap();
+    });
+
+    server.join().unwrap();
 }

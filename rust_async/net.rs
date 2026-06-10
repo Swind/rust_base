@@ -8,7 +8,9 @@
 
 use std::future::Future;
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream as StdTcpStream};
+use std::net::{
+    Shutdown, SocketAddr, TcpStream as StdTcpStream, ToSocketAddrs as StdToSocketAddrs,
+};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -78,8 +80,31 @@ impl Async {
         Ok(Self { inner: Arc::new(Inner { io, source }) })
     }
 
-    /// Connect to `addr` (IPv4 or IPv6) without blocking the executor.
-    pub async fn connect(addr: SocketAddr) -> io::Result<Async> {
+    /// Connect to `addr`, resolving host names off the executor (on the
+    /// blocking pool) and trying each resolved address until one succeeds.
+    ///
+    /// Accepts anything `std::net::ToSocketAddrs` does — a [`SocketAddr`], a
+    /// `"host:port"` string, a `(host, port)` tuple, etc. — as long as it is
+    /// `Send + 'static` (so it can move onto the resolver thread).
+    pub async fn connect(addr: impl StdToSocketAddrs + Send + 'static) -> io::Result<Async> {
+        let addrs =
+            crate::offload(move || addr.to_socket_addrs().map(|iter| iter.collect::<Vec<_>>()))
+                .await?;
+
+        let mut last_err = None;
+        for a in addrs {
+            match Async::connect_one(a).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            io::Error::new(ErrorKind::InvalidInput, "could not resolve to any address")
+        }))
+    }
+
+    /// Connect to a single resolved address (IPv4 or IPv6).
+    async fn connect_one(addr: SocketAddr) -> io::Result<Async> {
         let stream = start_connect(addr)?;
         let conn = Async::new(stream)?;
         // The socket becomes writable once the connect completes (or fails).
@@ -275,7 +300,12 @@ pub struct TcpListener {
 
 impl TcpListener {
     /// Bind a non-blocking listener and register it with the reactor.
-    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
+    ///
+    /// Accepts anything `std::net::ToSocketAddrs` does. Address resolution is
+    /// performed *synchronously* (bind targets are local addresses, so this is
+    /// effectively free); for connecting to remote host names off the executor,
+    /// see [`Async::connect`].
+    pub fn bind(addr: impl StdToSocketAddrs) -> io::Result<Self> {
         let io = std::net::TcpListener::bind(addr)?;
         io.set_nonblocking(true)?;
         let source = Source::new(io.as_raw_fd());
@@ -342,7 +372,10 @@ pub struct UdpSocket {
 
 impl UdpSocket {
     /// Bind a non-blocking UDP socket and register it with the reactor.
-    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
+    ///
+    /// Accepts anything `std::net::ToSocketAddrs` does; resolution is
+    /// synchronous (see [`TcpListener::bind`]).
+    pub fn bind(addr: impl StdToSocketAddrs) -> io::Result<Self> {
         let io = std::net::UdpSocket::bind(addr)?;
         io.set_nonblocking(true)?;
         let source = Source::new(io.as_raw_fd());
@@ -355,7 +388,10 @@ impl UdpSocket {
     }
 
     /// Set the default peer for [`send`](Self::send)/[`recv`](Self::recv).
-    pub fn connect(&self, addr: SocketAddr) -> io::Result<()> {
+    ///
+    /// Accepts anything `std::net::ToSocketAddrs` does; resolution is
+    /// synchronous.
+    pub fn connect(&self, addr: impl StdToSocketAddrs) -> io::Result<()> {
         self.io.connect(addr)
     }
 
