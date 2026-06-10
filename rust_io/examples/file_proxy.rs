@@ -26,6 +26,9 @@ mod linux {
     use rust_task::{TaskRunner, ThreadPool};
     use std::sync::{Arc, Barrier, Mutex};
 
+    /// Collected `(offset, bytes)` pairs from the concurrent-reads demo.
+    type Results = Arc<Mutex<Vec<(u64, Vec<u8>)>>>;
+
     fn temp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("rust_task_fp_example_{}_{}", std::process::id(), tag))
     }
@@ -138,7 +141,7 @@ mod linux {
         let pool = ThreadPool::new(4);
         let io = IoTaskRunner::new();
 
-        let results: Arc<Mutex<Vec<(u64, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let results: Results = Arc::new(Mutex::new(Vec::new()));
         // Only main + the last arriving callback meet at the barrier.
         // All callbacks run on the single IO thread sequentially, so blocking
         // each one would deadlock — only the last one (when all results are in)

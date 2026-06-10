@@ -94,7 +94,7 @@ mod linux {
                 self.fd,
                 false, // one-shot: auto-removed after firing once
                 WatchMode::Read,
-                &mut *ctrl,
+                &mut ctrl,
                 self_arc as Arc<dyn FdWatcher + Send + Sync>,
             );
         }
@@ -211,7 +211,7 @@ mod linux {
                 r.fd,
                 true, // persistent: stays registered across firings
                 WatchMode::Read,
-                &mut *r.controller.lock().unwrap(),
+                &mut r.controller.lock().unwrap(),
                 Arc::clone(&r) as Arc<dyn FdWatcher + Send + Sync>,
             );
             rd.wait();
@@ -275,7 +275,7 @@ mod linux {
                 read_fd,
                 true,
                 WatchMode::Read,
-                &mut *c.lock().unwrap(),
+                &mut c.lock().unwrap(),
                 Arc::clone(&h) as Arc<dyn FdWatcher + Send + Sync>,
             );
             rd.wait();
