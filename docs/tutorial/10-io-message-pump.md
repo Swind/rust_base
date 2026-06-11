@@ -2,9 +2,9 @@
 
 > 本章從 `rust_task` 跨進 `rust_io`，對應 Chromium 文件的 Internals 一節
 > （SequenceManager / MessagePump）與 IO thread 的角色。
-> Chromium 素材：`reference/threading_and_tasks.md` 的 Threads 與 MessagePump
-> 兩節、[`reference/base/message_loop/message_pump.h`](../../reference/base/message_loop/message_pump.h)、
-> [`message_pump_epoll.h`](../../reference/base/message_loop/message_pump_epoll.h)。
+> Chromium 素材：[`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Threads 與 MessagePump
+> 兩節、[`base/message_loop/message_pump.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/message_loop/message_pump.h)、
+> [`message_pump_epoll.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/message_loop/message_pump_epoll.h)。
 > 主角程式碼：[`rust_io/message_pump.rs`](../../rust_io/message_pump.rs)、
 > [`rust_io/io_task_runner.rs`](../../rust_io/io_task_runner.rs)、
 > [`rust_io/epoll_pump.rs`](../../rust_io/epoll_pump.rs)。
@@ -215,7 +215,7 @@ read_if_ready(buf, callback):
 
 ## 延伸閱讀
 
-- `reference/base/message_loop/message_pump_epoll.cc`：Chromium 真版 epoll
+- [`base/message_loop/message_pump_epoll.cc`](https://source.chromium.org/chromium/chromium/src/+/main:base/message_loop/message_pump_epoll.cc)：Chromium 真版 epoll
   pump，比對 `rust_io/epoll_pump.rs`——喚醒 fd（eventfd）、interest list 管理
   等核心結構幾乎逐一對應。
 - Chromium 文件 Internals 一節的 SequenceManager / RunLoop：本 repo 刻意

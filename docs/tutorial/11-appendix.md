@@ -36,34 +36,34 @@
 
 | 概念 | 首次出現 | Rust Book |
 |---|---|---|
-| 所有權、move、借用 | 1.4 | [ch4](../../reference/book/src/ch04-00-understanding-ownership.md) |
-| `thread::spawn`、`JoinHandle`、`move` closure | 1.5 | [ch16-01](../../reference/book/src/ch16-01-threads.md) |
-| `Send` / `Sync`、auto trait | 1.6 | [ch16-04](../../reference/book/src/ch16-04-extensible-concurrency-sync-and-send.md) |
-| channel 與訊息傳遞 | 1.7 | [ch16-02](../../reference/book/src/ch16-02-message-passing.md) |
-| closure 三種捕捉、`FnOnce`/`FnMut`/`Fn` | 2.2 | [ch13-01](../../reference/book/src/ch13-01-closures.md) |
-| trait object、`dyn`、裝箱 | 2.3 | [ch18-02](../../reference/book/src/ch18-02-trait-objects.md)、[ch15-01](../../reference/book/src/ch15-01-box.md) |
-| `'static` 與生命週期 | 2.3 | [ch10-03](../../reference/book/src/ch10-03-lifetime-syntax.md) |
-| `Option<T>`、`take`、`map` | 2.4、4.4、5.3 | [ch6-01](../../reference/book/src/ch06-01-defining-an-enum.md) |
-| `enum`、`match` 窮盡性、`if let` | 3.2、9.2 | [ch6](../../reference/book/src/ch06-00-enums.md) |
-| `derive`、`Copy`、`Default`、struct update | 3.2 | [ch5](../../reference/book/src/ch05-00-structs.md) |
-| trait 定義／實作／預設方法、靜態 vs 動態分派 | 3.3、10.2 | [ch10-02](../../reference/book/src/ch10-02-traits.md) |
-| `Arc`、`Arc::clone` 慣例 | 3.4 | [ch15-04](../../reference/book/src/ch15-04-rc.md) |
-| supertrait、object safety | 4.2 | [ch20-02](../../reference/book/src/ch20-02-advanced-traits.md) |
-| newtype | 4.3 | [ch20-03](../../reference/book/src/ch20-03-advanced-types.md) |
-| `thread_local!`、`RefCell`、內部可變性 | 4.3 | [ch15-05](../../reference/book/src/ch15-05-interior-mutability.md) |
-| `Drop` / RAII、`_` 前綴 vs `_` 陷阱 | 4.4 | [ch15-03](../../reference/book/src/ch15-03-drop.md) |
-| `Mutex` / `MutexGuard`、鎖中毒 | 4.5 | [ch16-03](../../reference/book/src/ch16-03-shared-state.md) |
+| 所有權、move、借用 | 1.4 | [ch4](https://rust-lang.tw/book-tw/ch04-00-understanding-ownership.html) |
+| `thread::spawn`、`JoinHandle`、`move` closure | 1.5 | [ch16-01](https://rust-lang.tw/book-tw/ch16-01-threads.html) |
+| `Send` / `Sync`、auto trait | 1.6 | [ch16-04](https://rust-lang.tw/book-tw/ch16-04-extensible-concurrency-sync-and-send.html) |
+| channel 與訊息傳遞 | 1.7 | [ch16-02](https://rust-lang.tw/book-tw/ch16-02-message-passing.html) |
+| closure 三種捕捉、`FnOnce`/`FnMut`/`Fn` | 2.2 | [ch13-01](https://rust-lang.tw/book-tw/ch13-01-closures.html) |
+| trait object、`dyn`、裝箱 | 2.3 | [ch17-02](https://rust-lang.tw/book-tw/ch17-02-trait-objects.html)、[ch15-01](https://rust-lang.tw/book-tw/ch15-01-box.html) |
+| `'static` 與生命週期 | 2.3 | [ch10-03](https://rust-lang.tw/book-tw/ch10-03-lifetime-syntax.html) |
+| `Option<T>`、`take`、`map` | 2.4、4.4、5.3 | [ch6-01](https://rust-lang.tw/book-tw/ch06-01-defining-an-enum.html) |
+| `enum`、`match` 窮盡性、`if let` | 3.2、9.2 | [ch6](https://rust-lang.tw/book-tw/ch06-00-enums.html) |
+| `derive`、`Copy`、`Default`、struct update | 3.2 | [ch5](https://rust-lang.tw/book-tw/ch05-00-structs.html) |
+| trait 定義／實作／預設方法、靜態 vs 動態分派 | 3.3、10.2 | [ch10-02](https://rust-lang.tw/book-tw/ch10-02-traits.html) |
+| `Arc`、`Arc::clone` 慣例 | 3.4 | [ch15-04](https://rust-lang.tw/book-tw/ch15-04-rc.html) |
+| supertrait、object safety | 4.2 | [ch19-02](https://rust-lang.tw/book-tw/ch19-02-advanced-traits.html) |
+| newtype | 4.3 | [ch19-03](https://rust-lang.tw/book-tw/ch19-03-advanced-types.html) |
+| `thread_local!`、`RefCell`、內部可變性 | 4.3 | [ch15-05](https://rust-lang.tw/book-tw/ch15-05-interior-mutability.html) |
+| `Drop` / RAII、`_` 前綴 vs `_` 陷阱 | 4.4 | [ch15-03](https://rust-lang.tw/book-tw/ch15-03-drop.html) |
+| `Mutex` / `MutexGuard`、鎖中毒 | 4.5 | [ch16-03](https://rust-lang.tw/book-tw/ch16-03-shared-state.html) |
 | atomics、memory ordering 直覺 | 4.5 | （Book 未深入；見 std 文件） |
-| `Weak`、引用循環 | 4.5、6.2 | [ch15-06](../../reference/book/src/ch15-06-reference-cycles.md) |
+| `Weak`、引用循環 | 4.5、6.2 | [ch15-06](https://rust-lang.tw/book-tw/ch15-06-reference-cycles.html) |
 | `BinaryHeap`、自訂 `Ord`、`Reverse` | 4.5、5.5 | （std 文件） |
 | `while let`、`Condvar` 三鐵律、lost wake-up | 5.3、5.4 | — |
 | `mem::take` | 5.4 | — |
-| 泛型、`where`、trait bound、單態化 | 6.3 | [ch10-01](../../reference/book/src/ch10-01-syntax.md) |
+| 泛型、`where`、trait bound、單態化 | 6.3 | [ch10-01](https://rust-lang.tw/book-tw/ch10-01-syntax.html) |
 | `self: &Arc<Self>` | 6.5 | — |
-| `let-else` | 7.2 | [ch19](../../reference/book/src/ch19-00-patterns.md) |
+| `let-else` | 7.2 | [ch18](https://rust-lang.tw/book-tw/ch18-00-patterns.html) |
 | `matches!` | 8.2 | — |
 | closure 裝飾器（包 closure） | 8.3 | — |
-| `unsafe` 與 FFI 的安置 | 10.2 | [ch20-01](../../reference/book/src/ch20-01-unsafe-rust.md) |
+| `unsafe` 與 FFI 的安置 | 10.2 | [ch19-01](https://rust-lang.tw/book-tw/ch19-01-unsafe-rust.html) |
 
 ## 附錄 B：本 repo 刻意未實作的 Chromium 機制
 
@@ -110,7 +110,7 @@
    `rust_task/thread_pool/sequence.rs`，看你少考慮了哪些（提示通常是：
    did_process_task 的回傳值語意、到期 delayed task 的搬移時機）。
 5. **（讀原文）** 帶着全系列的概念回去通讀
-   [`reference/threading_and_tasks.md`](../../reference/threading_and_tasks.md)
+   [`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md)
    ——這次每一節你都該有對應的程式碼畫面。讀到陌生的（`PostJob`、
    `TaskEnvironment`…）就是附錄 B 的未移植清單。
 6. **（往下走）** 進入 `rust_io` / `rust_net`：讀兩個 crate 的 `README.md`，

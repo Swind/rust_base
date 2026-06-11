@@ -1,11 +1,11 @@
 # 第 8 章 Shutdown：結束不是把一切丟掉
 
-> Chromium 素材：`reference/threading_and_tasks.md` 的 Annotating Tasks with
+> Chromium 素材：[`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Annotating Tasks with
 > TaskTraits 與 Using ThreadPool in a New Process（結尾 Shutdown 段）、
-> [`reference/base/task/task_traits.h`](../../reference/base/task/task_traits.h)
+> [`base/task/task_traits.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/task_traits.h)
 > 中 `TaskShutdownBehavior` 的註解、
-> [`reference/base/task/thread_pool/task_tracker.h`](../../reference/base/task/thread_pool/task_tracker.h)。
-> Rust 素材：Rust Book [ch21-03 Graceful Shutdown](../../reference/book/src/ch21-03-graceful-shutdown-and-cleanup.md)
+> [`base/task/thread_pool/task_tracker.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/task_tracker.h)。
+> Rust 素材：Rust Book [ch20-03 Graceful Shutdown](https://rust-lang.tw/book-tw/ch20-03-graceful-shutdown-and-cleanup.html)
 > （Book 版只有「等所有 worker 跑完」一種語意——對照本章可看出 Chromium 模型
 > 精細在哪）。
 > 主角程式碼：[`rust_task/thread_pool/task_tracker.rs`](../../rust_task/thread_pool/task_tracker.rs)（含測試 197 行）。
@@ -170,10 +170,10 @@ shutdown 行為，層層洋蔥往上裹，核心引擎（Sequence、worker）完
 在有所有權的語言裡格外乾淨：每層 `Box<dyn FnOnce>` 進、`Box<dyn FnOnce>` 出，
 誰持有誰一目了然。
 
-## 8.4 與 Rust Book ch21 對照
+## 8.4 與 Rust Book ch20 對照
 
 Rust Book 終章的迷你 thread pool 也做了 graceful shutdown
-（[ch21-03](../../reference/book/src/ch21-03-graceful-shutdown-and-cleanup.md)）：
+（[ch20-03](https://rust-lang.tw/book-tw/ch20-03-graceful-shutdown-and-cleanup.html)）：
 drop channel 的發送端 → worker 的 `recv()` 回 `Err` → 迴圈結束 → join。
 乾淨，但只有**一種**語意：「佇列裡的全部跑完」。
 
@@ -209,9 +209,9 @@ drop channel 的發送端 → worker 的 `recv()` 回 `Err` → 迴圈結束 →
 
 ## 延伸閱讀
 
-- `reference/base/task/thread_pool/task_tracker.h`：真版 tracker 連
+- [`base/task/thread_pool/task_tracker.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/task_tracker.h)：真版 tracker 連
   `CONTINUE_ON_SHUTDOWN` 在 shutdown 後啟動的任務數都有原子簿記，註解詳述了
   每種行為在「post / start / complete」三個時點的判定矩陣。
-- `reference/threading_and_tasks.md` 的 Testing 一節：Chromium 測試用
+- [`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Testing 一節：Chromium 測試用
   `TaskEnvironment` + `RunLoop` 精確控制任務執行，本 repo 的對應手法是
   Barrier ＋ flush task（見各測試檔）。

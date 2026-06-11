@@ -2,11 +2,11 @@
 
 > 本章打開引擎蓋。讀懂它，你就掌握了 Chromium `base/task/thread_pool/` 目錄的
 > 骨架，以及 Rust 並行工具箱裡最後幾件大型器材（`Condvar`、`JoinHandle` 管理）。
-> Chromium 素材：[`reference/base/task/thread_pool/task_source.h`](../../reference/base/task/thread_pool/task_source.h)、
-> [`thread_group.h`](../../reference/base/task/thread_pool/thread_group.h)、
-> [`priority_queue.h`](../../reference/base/task/thread_pool/priority_queue.h)。
-> Rust 素材：Rust Book [ch16-01 threads](../../reference/book/src/ch16-01-threads.md)、
-> [ch21-02 多執行緒 Web Server](../../reference/book/src/ch21-02-multithreaded.md)
+> Chromium 素材：[`base/task/thread_pool/task_source.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/task_source.h)、
+> [`thread_group.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/thread_group.h)、
+> [`priority_queue.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/priority_queue.h)。
+> Rust 素材：Rust Book [ch16-01 threads](https://rust-lang.tw/book-tw/ch16-01-threads.html)、
+> [ch20-02 多執行緒 Web Server](https://rust-lang.tw/book-tw/ch20-02-multithreaded.html)
 > （Book 終章手寫的迷你 thread pool，是本章絕佳的「玩具版對照組」）。
 > 主角程式碼：[`rust_task/thread_pool/thread_group.rs`](../../rust_task/thread_pool/thread_group.rs)、
 > [`task_source.rs`](../../rust_task/thread_pool/task_source.rs)、
@@ -54,7 +54,7 @@ pub trait TaskSource: Send + Sync {
 
 `Sequence` 是它唯一的實作（第 4 章已看過 `will_run_task` / `take_task` /
 `did_process_task` 的內容）。對應 Chromium 的
-`reference/base/task/thread_pool/task_source.h` ——那邊還有 `JobTaskSource`
+[`base/task/thread_pool/task_source.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/task_source.h) ——那邊還有 `JobTaskSource`
 （平行 job）等其他實作，本 repo 未移植。
 
 〔Rust 教學〕注意所有方法都收 `&self`（第 3 章講過的並行 API 形狀）：
@@ -97,7 +97,7 @@ impl ThreadGroup {
 〔Rust 教學〕看 `new` 怎麼解決「worker 需要引用建立它的 group」：先把 group
 裝進 `Arc`，再為每個 worker `Arc::clone` 一份 move 進 closure。這就是第 3 章
 預告的「`new` 回傳 `Arc<Self>` 的第二個理由」——**物件內部的執行緒要引用物件
-本身，唯一安全的表達就是共享所有權**。Rust Book ch21-02 的迷你 thread pool
+本身，唯一安全的表達就是共享所有權**。Rust Book ch20-02 的迷你 thread pool
 用 channel 繞開了這個需求，兩種解法對照讀很有收穫。
 
 worker 主迴圈（`thread_group.rs:96`）：
@@ -256,7 +256,7 @@ struct QueueEntry {
 而不是套 `Reverse`——兩種等價手法本 repo 各示範了一次，對照讀有助於把
 「`BinaryHeap` ＋自訂序」這招練熟。
 
-對應 Chromium 的 `reference/base/task/thread_pool/priority_queue.h` 與
+對應 Chromium 的 [`base/task/thread_pool/priority_queue.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/priority_queue.h) 與
 `task_source_sort_key.h`。Chromium 的 sort key 還包含「worker 數」等欄位用於
 更精細的公平性，本 repo 取最小子集。
 
@@ -292,7 +292,7 @@ extra.join().unwrap();    // 它不歸 pool 管，自己 join 自己的
 
 ## 動手做
 
-1. 讀 Rust Book [ch21-02](../../reference/book/src/ch21-02-multithreaded.md) 的
+1. 讀 Rust Book [ch20-02](https://rust-lang.tw/book-tw/ch20-02-multithreaded.html) 的
    迷你 thread pool（約 100 行），列出它與 `rust_task` 的三個差異
    （提示：任務分發機制、順序保證、shutdown 細緻度）。
 2. 把 `worker_loop` 裡 `RunStatus::Disallowed` 分支改成也呼叫
@@ -304,7 +304,7 @@ extra.join().unwrap();    // 它不歸 pool 管，自己 join 自己的
 
 ## 延伸閱讀
 
-- Chromium 真版 worker 迴圈：`reference/base/task/thread_pool/worker_thread.cc`
+- Chromium 真版 worker 迴圈：[`base/task/thread_pool/worker_thread.cc`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/worker_thread.cc)
   的 `WorkerThread::RunWorker`——多了 idle 超時回收、動態擴編等本 repo 未移植
   的機制。
 - `RegisteredTaskSource` 在 Chromium 是個複雜的 RAII 狀態機

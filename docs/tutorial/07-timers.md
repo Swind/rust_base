@@ -1,8 +1,8 @@
 # 第 7 章 延遲任務與 RepeatingTimer
 
-> Chromium 素材：`reference/threading_and_tasks.md` 的 Posting a Task with a
-> Delay 一節、[`reference/base/timer/timer.h`](../../reference/base/timer/timer.h)、
-> [`reference/base/task/thread_pool/delayed_task_manager.h`](../../reference/base/task/thread_pool/delayed_task_manager.h)。
+> Chromium 素材：[`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Posting a Task with a
+> Delay 一節、[`base/timer/timer.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/timer/timer.h)、
+> [`base/task/thread_pool/delayed_task_manager.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/thread_pool/delayed_task_manager.h)。
 > 主角程式碼：[`rust_task/timer.rs`](../../rust_task/timer.rs)、
 > [`rust_task/thread_pool/delayed_task_manager.rs`](../../rust_task/thread_pool/delayed_task_manager.rs)。
 > 範例：`cargo run -p rust_task --example repeating_timer`。
@@ -62,7 +62,7 @@ loop {
 
 ## 7.2 `RepeatingTimer`：把「取消」建模成「所有權消失」
 
-對應 Chromium 的 `base::RepeatingTimer`（`reference/base/timer/timer.h`）。
+對應 Chromium 的 `base::RepeatingTimer`（[`base/timer/timer.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/timer/timer.h)）。
 文件範例：
 
 ```cpp
@@ -189,5 +189,5 @@ fn schedule_next(weak: Weak<TimerInner>) {
 
 ## 延伸閱讀
 
-- `reference/base/timer/timer.h`：Chromium 的 timer 家族還有 `OneShotTimer`、
+- [`base/timer/timer.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/timer/timer.h)：Chromium 的 timer 家族還有 `OneShotTimer`、
   `DeadlineTimer`、`MetronomeTimer`；讀它們的註解，想想各自用本章的零件怎麼拼。

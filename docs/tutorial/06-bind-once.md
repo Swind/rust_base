@@ -1,14 +1,14 @@
 # 第 6 章 bind_once：物件生命週期與回呼
 
 > 本章對應 Chromium 守則三：「跨 sequence 操作物件時，小心生命週期」。
-> Chromium 素材：`reference/threading_and_tasks.md` 的 Cancelling a Task 一節、
-> [`reference/base/memory/weak_ptr.h`](../../reference/base/memory/weak_ptr.h)、
-> [`reference/base/functional/bind.h`](../../reference/base/functional/bind.h)
+> Chromium 素材：[`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Cancelling a Task 一節、
+> [`base/memory/weak_ptr.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/memory/weak_ptr.h)、
+> [`base/functional/bind.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/functional/bind.h)
 > （搜尋 `Unretained` 的註解）。
-> Rust 素材：Rust Book [ch15-04 Rc](../../reference/book/src/ch15-04-rc.md)、
-> [ch15-06 Weak 與引用循環](../../reference/book/src/ch15-06-reference-cycles.md)、
-> [ch10-01 泛型](../../reference/book/src/ch10-01-syntax.md)、
-> [ch10-02 trait bound](../../reference/book/src/ch10-02-traits.md)。
+> Rust 素材：Rust Book [ch15-04 Rc](https://rust-lang.tw/book-tw/ch15-04-rc.html)、
+> [ch15-06 Weak 與引用循環](https://rust-lang.tw/book-tw/ch15-06-reference-cycles.html)、
+> [ch10-01 泛型](https://rust-lang.tw/book-tw/ch10-01-syntax.html)、
+> [ch10-02 trait bound](https://rust-lang.tw/book-tw/ch10-02-traits.html)。
 > 主角程式碼：[`rust_task/bind.rs`](../../rust_task/bind.rs)（全檔含測試 178 行）。
 
 ## 6.1 問題：佇列會把你的物件留多久？
@@ -52,7 +52,7 @@ class A {
 ## 6.2 Rust 的原料：`Arc` 與 `Weak` 深入
 
 Rust 標準庫直接內建了這對概念
-（[ch15-06](../../reference/book/src/ch15-06-reference-cycles.md)）。`Arc<T>`
+（[ch15-06](https://rust-lang.tw/book-tw/ch15-06-reference-cycles.html)）。`Arc<T>`
 維護兩個計數：
 
 ```rust
@@ -137,7 +137,7 @@ pool.post_task(traits, bind_once(Arc::downgrade(&handler), move |h| h.on_message
 ### 〔Rust 教學〕泛型＋trait bound：這 12 行值得逐字讀
 
 `bind_once` 的簽名是一堂濃縮的泛型課
-（[ch10-01](../../reference/book/src/ch10-01-syntax.md)）：
+（[ch10-01](https://rust-lang.tw/book-tw/ch10-01-syntax.html)）：
 
 ```rust
 pub fn bind_once<P, T, F>(ptr: P, f: F) -> Box<dyn FnOnce() + Send + 'static>
@@ -160,7 +160,7 @@ where
   零執行期開銷。動態的部分只有回傳值——裝箱成 `Box<dyn FnOnce()>`，因為佇列
   需要統一型別（第 2 章）。「泛型進、trait object 出」是這類 API 的典型剖面。
 - 對照 Chromium：`base::BindOnce` 為了同樣的效果需要
-  `reference/base/functional/bind_internal.h` 約三千行模板機械，其中專門有
+  [`base/functional/bind_internal.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/functional/bind_internal.h) 約三千行模板機械，其中專門有
   特化來識別 `WeakPtr` 接收者並插入「死了就跳過」邏輯。Rust 版 12 行。
 
 ### `f` 收到的是 `Arc<T>`：執行期間保證活着
@@ -267,9 +267,9 @@ factory 成員。
 
 ## 延伸閱讀
 
-- `reference/base/memory/weak_ptr.h` 開頭 60 行的註解：`WeakPtr` 的完整契約，
+- [`base/memory/weak_ptr.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/memory/weak_ptr.h) 開頭 60 行的註解：`WeakPtr` 的完整契約，
   特別是「must be dereferenced and invalidated on the same SequencedTaskRunner」
   ——然後回想 Rust 的 `Weak` 為什麼不需要這條。
 - 第 4.5(c) 節（`Weak` 斷循環引用）＋本章＝`Weak` 的兩大用途：打破所有權環、
-  「不延命」的回呼。Rust Book [ch15-06](../../reference/book/src/ch15-06-reference-cycles.md)
+  「不延命」的回呼。Rust Book [ch15-06](https://rust-lang.tw/book-tw/ch15-06-reference-cycles.html)
   的 tree 例子是第三個經典場景（父子互指）。

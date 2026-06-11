@@ -10,13 +10,13 @@
    `Send` / `Sync`、`Arc` / `Weak`、`Mutex` / `Condvar`、atomics 與 RAII。
    假設讀者是 **Rust 初學者**：用到的語法都會解釋或給出 Rust Book 的精確章節。
 
-## 三份對照素材（都在這個 repo 裡）
+## 三份對照素材
 
 | 素材 | 位置 | 用途 |
 |---|---|---|
-| Chromium 設計文件 | [`reference/threading_and_tasks.md`](../../reference/threading_and_tasks.md) | 每章開頭引用的「官方說法」 |
-| Chromium `base/` 原始碼 | [`reference/base/`](../../reference/base/) | C++ 實作對照（如 `task/task_runner.h`、`memory/weak_ptr.h`） |
-| The Rust Programming Language | [`reference/book/src/`](../../reference/book/src/) | Rust 語法的權威出處（下稱 *Rust Book*） |
+| Chromium 設計文件 | [`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) | 每章開頭引用的「官方說法」 |
+| Chromium `base/` 原始碼 | [`base/`](https://source.chromium.org/chromium/chromium/src/+/main:base/) | C++ 實作對照（如 `task/task_runner.h`、`memory/weak_ptr.h`） |
+| The Rust Programming Language | [rust-lang.tw/book-tw](https://rust-lang.tw/book-tw/)（繁體中文譯本） | Rust 語法的權威出處（下稱 *Rust Book*）。本系列引用的章節編號以這份譯本為準；最新英文版多了 async 一章（ch17），其後章節編號比譯本大 1 |
 
 而被講解的主角是本 workspace 的原始碼，以 `rust_task/` 為主：crate root 是
 `rust_task/lib.rs`（注意本 workspace 的 crate root 都是 `<crate>/lib.rs`，不在
@@ -33,7 +33,7 @@
 | [05](05-internals.md) | ThreadPool 內部：worker、佇列與喚醒 | `TaskSource`、worker loop、優先序排程 | `Condvar`、spurious wakeup、lost wake-up、`while let`、`mem::take` |
 | [06](06-bind-once.md) | bind_once：物件生命週期與回呼 | `base::WeakPtr`、`base::Unretained` | `Arc` / `Weak` 深入、**泛型與 trait bound**、為同一 trait 實作多個型別、單態化 |
 | [07](07-timers.md) | 延遲任務與 RepeatingTimer | `PostDelayedTask`、`base::RepeatingTimer` | `let-else`、用 `Weak` 失效實作取消 |
-| [08](08-shutdown.md) | Shutdown：結束不是把一切丟掉 | `TaskShutdownBehavior`、`TaskTracker` | `matches!`、鎖內不變量、與 Rust Book ch21 的 graceful shutdown 對照 |
+| [08](08-shutdown.md) | Shutdown：結束不是把一切丟掉 | `TaskShutdownBehavior`、`TaskTracker` | `matches!`、鎖內不變量、與 Rust Book ch20 的 graceful shutdown 對照 |
 | [09](09-post-task-and-reply.md) | post_task_and_reply：跨 sequence 協作 | `PostTaskAndReply(WithResult)` | move closure 的捕捉時機、`Option` 的鏈式處理 |
 | [10](10-io-message-pump.md) | IO Thread 與 MessagePump | `MessagePumpForIO`、`FdWatcher` | trait 作為平台抽象、trait 預設方法、`RawFd` |
 | [11](11-appendix.md) | 附錄 | 概念對照速查表、未實作清單 | Rust Book 章節對照、動手練習 |
@@ -51,7 +51,7 @@
   ```
 
 - 讀完第 8 章後，強烈建議去讀 Rust Book 的終章
-  [ch21：多執行緒 Web Server](../../reference/book/src/ch21-02-multithreaded.md)——
+  [ch20：多執行緒 Web Server](https://rust-lang.tw/book-tw/ch20-02-multithreaded.html)——
   它從零手寫一個迷你 thread pool（含 graceful shutdown），正好是 `rust_task`
   的「玩具版」。先讀過本系列再看它，你會發現每一行都認得；反過來，比較兩者的
   差距（sequence、優先序、shutdown 行為）就是 Chromium 架構的價值所在。

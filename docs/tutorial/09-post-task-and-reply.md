@@ -1,7 +1,7 @@
 # 第 9 章 post_task_and_reply：跨 sequence 的請求／回覆
 
-> Chromium 素材：`reference/threading_and_tasks.md` 的 Keeping the Browser
-> Responsive 一節、[`reference/base/task/task_runner.h`](../../reference/base/task/task_runner.h)
+> Chromium 素材：[`threading_and_tasks.md`](https://chromium.googlesource.com/chromium/src/+/main/docs/threading_and_tasks.md) 的 Keeping the Browser
+> Responsive 一節、[`base/task/task_runner.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/task_runner.h)
 > 中 `PostTaskAndReply` 的註解。
 > 主角程式碼：[`rust_task/thread_pool/pooled_sequenced_task_runner.rs`](../../rust_task/thread_pool/pooled_sequenced_task_runner.rs)
 > 的 `post_task_and_reply`（九行）。
@@ -94,7 +94,7 @@ if let Some(runner) = reply_runner {
 ```
 
 等價於 `match reply_runner { Some(runner) => {...}, None => {} }`
-（[ch6-03](../../reference/book/src/ch06-03-if-let.md)）。`None` 在這裡的
+（[ch6-03](https://rust-lang.tw/book-tw/ch06-03-if-let.html)）。`None` 在這裡的
 語意：呼叫者不在任何 sequence 上（例如從 main 函式直接呼叫）——沒有「家」可回，
 reply 被靜默丟棄。這是個值得商榷的設計決策（Chromium 版會 DCHECK），本 repo
 選擇了寬容；讀開源程式碼時注意這種「邊界情況的態度」往往藏在最不起眼的
@@ -155,7 +155,7 @@ runner.post_task_and_reply(
 
 ## 延伸閱讀
 
-- `reference/base/task/bind_post_task.h`：Chromium 把「callback 綁定回某個
+- [`base/task/bind_post_task.h`](https://source.chromium.org/chromium/chromium/src/+/main:base/task/bind_post_task.h)：Chromium 把「callback 綁定回某個
   runner」抽象成 `BindPostTask`——任何人拿到這個 callback，呼叫它都等於 post
   回指定 sequence。想想用本章零件在 Rust 怎麼實作（提示：closure 捕捉
   `Arc<dyn TaskRunner>` ＋ inner callback）。
